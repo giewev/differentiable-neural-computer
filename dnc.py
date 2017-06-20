@@ -32,44 +32,49 @@ batch_size = 100
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
 targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
 
-def interface_read_key(interface, index):
-    return interface[:, (index - 1) * memory_vector_size : index * memory_vector_size]
+# A class that wraps a batch of interface vectors in order to provide the specific factors from them
+class InterfaceVector(object):
+    def __init__(self, vector):
+        self.vector = vector
 
-def interface_read_strength(interface, index):
-    start = read_vector_count * memory_vector_size
-    return interface[:, start + index]
+    def read_key(self, index):
+        return self.vector[:, (index - 1) * memory_vector_size : index * memory_vector_size]
 
-def interface_write_key(interface):
-    start = read_vector_count * (memory_vector_size + 1)
-    return interface[:, start : start + memory_vector_size]
+    def read_strength(self, index):
+        start = read_vector_count * memory_vector_size
+        return self.vector[:, start + index]
 
-def interface_erase_vector(interface):
-    start = read_vector_count * memory_vector_size + memory_vector_size + read_vector_count
-    return interface[:, start : start + memory_vector_size]
+    def write_key(self):
+        start = read_vector_count * (memory_vector_size + 1)
+        return self.vector[:, start : start + memory_vector_size]
 
-def interface_write_vector(interface):
-    start = read_vector_count * memory_vector_size + read_vector_count + (memory_vector_size * 2)
-    return interface[:, start : start + memory_vector_size]
+    def erase_vector(self):
+        start = read_vector_count * memory_vector_size + memory_vector_size + read_vector_count
+        return self.vector[:, start : start + memory_vector_size]
 
-def interface_free_gate(interface, index):
-    start = read_vector_count * memory_vector_size + read_vector_count + (memory_vector_size * 3)
-    return interface[:, start + index]
+    def write_vector(self):
+        start = read_vector_count * memory_vector_size + read_vector_count + (memory_vector_size * 2)
+        return self.vector[:, start : start + memory_vector_size]
 
-def interface_read_modes(interface, index):
-    start = read_vector_count * memory_vector_size + (read_vector_count * 2) + (memory_vector_size * 3)
-    return interface[:, start + ((index - 1) * 3) : start + (index * 3)]
+    def free_gate(self, index):
+        start = read_vector_count * memory_vector_size + read_vector_count + (memory_vector_size * 3)
+        return self.vector[:, start + index]
 
-def interface_allocation_gate(interface):
-    start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
-    return interface[:, start]
+    def read_modes(self, index):
+        start = read_vector_count * memory_vector_size + (read_vector_count * 2) + (memory_vector_size * 3)
+        return self.vector[:, start + ((index - 1) * 3) : start + (index * 3)]
 
-def interface_write_gate(interface):
-    start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
-    return interface[:, start + 1]
+    def allocation_gate(self):
+        start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
+        return self.vector[:, start]
 
-def interface_write_strength(interface):
-    start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
-    return interface[:, start + 2]
+    def write_gate(self):
+        start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
+        return self.vector[:, start + 1]
+
+    def write_strength(self):
+        start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
+        return self.vector[:, start + 2]
 
 def declare_weights(node_counts):
     weights = dict()
@@ -114,12 +119,12 @@ def content_weighting(memory, key, strength):
     return tf.map_fn(row_cosine_similarity, (memory, key, strength))
 
 def write_to_memory(interface, memory):
-    lookup_key = interface_write_key(interface)
-    write_vector = interface_write_vector(interface)
-    strength = interface_write_strength(interface)
-    mode = interface_allocation_gate(interface)
-    write_gate = interface_write_gate(interface)
-    erase_vector = interface_erase_vector(interface)
+    lookup_key = interface.write_key()
+    write_vector = interface.write_vector()
+    strength = interface.write_strength()
+    mode = interface.allocation_gate()
+    write_gate = interface.write_gate()
+    erase_vector = interface.erase_vector()
 
     lookup_weighting = content_weighting(memory, lookup_key, strength)
     allocation_weighting = None # Replace with available space heuristic
@@ -141,7 +146,7 @@ def controller_network(input_sequence, weights, biases):
         controller_input = tf.concat([current_input_vector, flattened_read_vectors], 1)
         controller_output = basic_network(controller_input, weights, biases)
         outputs.append(tf.matmul(controller_output[:, : class_count], weights['out']))
-        interface_vector = tf.matmul(controller_output[:, class_count :], weights['interface'])
+        interface_vector = InterfaceVector(tf.matmul(controller_output[:, class_count :], weights['interface']))
 
         memory = write_to_memory(interface_vector, memory)
 
