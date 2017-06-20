@@ -76,22 +76,27 @@ class InterfaceVector(object):
         start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
         return self.vector[:, start + 2]
 
+# Creates a set of weights based on the given layer sizes
 def declare_weights(node_counts):
     weights = dict()
     for x in range(len(node_counts) - 1):
         weights[x] = tf.Variable(tf.random_normal([node_counts[x], node_counts[x + 1]]))
     return weights
 
-def add_controller_weights(weights):
-    weights['out'] = tf.Variable(tf.random_normal([class_count, class_count]))
-    weights['interface'] = tf.Variable(tf.random_normal([interface_vector_size, interface_vector_size]))
-
+# Creates a set of biases based on the given layer sizes
 def declare_biases(node_counts):
     biases = dict()
     for x in range(len(node_counts) - 1):
         biases[x] = tf.Variable(tf.random_normal([node_counts[x + 1]]))
     return biases
 
+# Add special weights which are applied to the final controller output
+# These weights will produce the output and interface vectors respectively
+def add_controller_weights(weights):
+    weights['out'] = tf.Variable(tf.random_normal([class_count, class_count]))
+    weights['interface'] = tf.Variable(tf.random_normal([interface_vector_size, interface_vector_size]))
+
+# Defines a simple feed forward neural network
 def basic_network(signal, weights, biases):
     layer = 0
     while layer in weights:
@@ -101,11 +106,13 @@ def basic_network(signal, weights, biases):
         layer += 1
     return signal
 
+# Calculates the cosine similarity between two vectors
 def cosine_similarity(a, b):
     norm_a = tf.nn.l2_normalize(a,0)        
     norm_b = tf.nn.l2_normalize(b,0)
     return tf.reduce_sum(tf.multiply(normalize_a,normalize_b))
 
+# Calculates the cosine similarity between each row of a matrix and a given vector
 def row_cosine_similarity(x):
     memory = x[0]
     key = x[1]
@@ -115,9 +122,11 @@ def row_cosine_similarity(x):
         return cosine_similarity(row, key)
     return strength * tf.map_fn(check_similarity, memory)
 
+# Calculates a memory access weighting based on a similarity lookup
 def content_weighting(memory, key, strength):
     return tf.map_fn(row_cosine_similarity, (memory, key, strength))
 
+# Writes an update to the memory matrix based on the given interface vector
 def write_to_memory(interface, memory):
     lookup_key = interface.write_key()
     write_vector = interface.write_vector()
@@ -133,6 +142,7 @@ def write_to_memory(interface, memory):
 
     return memory
 
+# Defines a network with the additional ability to interface with external memory
 def controller_network(input_sequence, weights, biases):
     add_controller_weights(weights)
     outputs = []
@@ -153,12 +163,7 @@ def controller_network(input_sequence, weights, biases):
     outputs = tf.reshape(outputs, [-1, maximum_sequence_length, class_count])
     return outputs
 
-def convert_batch_to_sequence(inputs, outputs, batch_size):
-    inputs = np.reshape(inputs, [batch_size, maximum_sequence_length, input_count])
-    outputs = np.reshape(outputs, [batch_size, 1, class_count])
-    outputs = np.repeat(outputs, maximum_sequence_length, 1)
-    return inputs, outputs
-
+# Generates a random sequence with an expected output of a delayed echo
 def generateData():
     x = np.array(np.random.choice(2, maximum_sequence_length, p=[0.5, 0.5]))
     y = np.roll(x, echo_step)
