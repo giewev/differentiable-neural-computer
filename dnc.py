@@ -180,7 +180,7 @@ def controller_network(input_sequence, weights, biases):
     return outputs
 
 # Generates a random sequence with an expected output of a delayed echo
-def generateData():
+def generate_echo_data():
     x = np.array(np.random.choice(2, maximum_sequence_length, p=[0.5, 0.5]))
     y = np.roll(x, echo_step)
     y[0:echo_step] = 0
@@ -188,6 +188,8 @@ def generateData():
     x = np.reshape(x, [-1, 1])
     y = np.reshape(y, [-1, 1])
     return (x, y)
+
+
 
 node_counts = [input_count + (read_vector_count * memory_vector_size), hidden_count, class_count + interface_vector_size]
 lstm_dimensions = [hidden_count, class_count]
@@ -204,7 +206,7 @@ with tf.Session() as sess:
         avg_cost = 0.
         batch_count = int(mnist.train.num_examples / batch_size)
         for x in range(batch_count):
-            batch = [generateData() for x in range(batch_size)]
+            batch = [generate_echo_data() for x in range(batch_size)]
             batch_inputs = np.array([x[0] for x in batch])
             batch_targets = np.array([x[1] for x in batch])
             # batch_inputs, batch_targets = mnist.train.next_batch(batch_size)
