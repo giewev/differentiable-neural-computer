@@ -189,7 +189,56 @@ def generate_echo_data():
     y = np.reshape(y, [-1, 1])
     return (x, y)
 
+def load_babi_file(path):
+    with open(path) as f:
+        lines = f.readlines()
+        lines = [x.split(' ') for x in lines]
+        stories = []
+        for x in lines:
+            if int(x[0]) == 1:
+                stories.append([])
+            stories[-1].append(x)
+        return stories
 
+def is_numeric(string):
+    try:
+        int(string)
+        return True
+    except:
+        return False
+
+def build_vectorization(stories):
+    ids = dict()
+    next_id = 0
+    for x in stories:
+        for y in x:
+            if y not in ids:
+                ids[y] = next_id
+                next_id = next_id + 1
+    return ids
+
+def one_hot(size, index):
+    a = np.ndarray(shape = (size,), dtype = float)
+    a[index] = 1
+    return a
+
+def vectorize_babi_file(stories):
+    stories = [[z for y in x for z in y if not is_numeric(z)] for x in stories]
+    for x in stories:
+        y = 0
+        while y < len(x):
+            if "?" in x[y]:
+                x[y] = x[y].replace("?", "")
+                x.insert(y + 1, "?")
+                y += 1
+            if "." in x[y]:
+                x[y] = x[y].replace(".", "")
+                x.insert(y + 1, ".")
+                y += 1
+            y += 1
+    ids = build_vectorization(stories)
+    stories = [[one_hot(len(ids), ids[y]) for y in x] for x in stories]
+    return stories
 
 node_counts = [input_count + (read_vector_count * memory_vector_size), hidden_count, class_count + interface_vector_size]
 lstm_dimensions = [hidden_count, class_count]
@@ -199,6 +248,9 @@ biases = declare_biases(lstm_dimensions)
 predict = lstm_network(inputs, weights, biases)
 cost = tf.reduce_mean(tf.squared_difference(predict, targets))
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
+
+babi_data = load_babi_file(r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en\qa1_single-supporting-fact_test.txt")
+babi_data = vectorize_babi_file(babi_data)
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
