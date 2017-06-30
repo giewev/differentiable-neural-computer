@@ -1,11 +1,93 @@
 import tensorflow as tf
 import numpy as np
 from tensorflow.examples.tutorials.mnist import input_data
+import random
 mnist = input_data.read_data_sets("/tmp/data/", one_hot=True)
 
-input_count = 1
-hidden_count = 5
-class_count = 1
+def load_babi_file(path):
+    with open(path) as f:
+        lines = f.readlines()
+        lines = [x.split(' ') for x in lines]
+        stories = []
+        for x in lines:
+            if int(x[0]) == 1:
+                stories.append([])
+            stories[-1].append(x)
+        return stories
+
+def is_numeric(string):
+    try:
+        int(string)
+        return True
+    except:
+        return False
+
+def build_vectorization(stories):
+    ids = dict()
+    next_id = 0
+    for x in stories:
+        for y in x:
+            if y not in ids:
+                ids[y] = next_id
+                next_id = next_id + 1
+    ids["_"] = next_id
+    return ids
+
+def one_hot(size, index):
+    a = np.zeros(shape = (size,), dtype = float)
+    a[index] = 1
+    return a
+
+def vectorize_babi_file(stories):
+    stories = [[z for y in x for z in y if not is_numeric(z)] for x in stories]
+    for x in stories:
+        y = 0
+        while y < len(x):
+            if "?" in x[y]:
+                x[y] = x[y].replace("?", "")
+                x.insert(y + 1, "?")
+                y += 1
+            if "." in x[y]:
+                x[y] = x[y].replace(".", "")
+                x.insert(y + 1, ".")
+                y += 1
+            y += 1
+    ids = build_vectorization(stories)
+    stories = [[one_hot(len(ids), ids[y]) for y in x] for x in stories]
+    return (ids, stories)
+
+def build_babi_targets(stories, ids):
+    targeted_stories = []
+    for story in stories:
+        targets = []
+        for ind, word in enumerate(story):
+            target = np.zeros(shape = (len(ids),), dtype = float)
+            if ind > 0 and np.all(np.equal(story[ind - 1], one_hot(len(ids), ids["?"]))):
+                target = word
+                story[ind] = one_hot(len(ids), ids["_"])
+            targets.append(target)
+        targeted_stories.append(targets)
+    return (stories, targeted_stories)
+
+def zero_pad_sequence(sequence, length):
+    while len(sequence) < length:
+        sequence.append(np.zeros(shape = np.shape(sequence[0]), dtype = float))
+    return sequence
+
+babi_data = load_babi_file(r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en\qa1_single-supporting-fact_test.txt")
+babi_ids, babi_data = vectorize_babi_file(babi_data)
+babi_data, babi_targets = build_babi_targets(babi_data, babi_ids)
+sequence_lengths = [len(x) for x in babi_data]
+maximum_sequence_length = max(sequence_lengths)
+babi_data = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_data]
+babi_targets = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_targets]
+babi_io = list(zip(babi_data, babi_targets))
+
+input_count = 82
+hidden_count = 100
+class_count = 82
+
+echo_step = 5
 
 read_vector_count = 1
 memory_vector_size = 10
@@ -24,11 +106,8 @@ interface_vector_dimensions = [
 
 interface_vector_size = sum(interface_vector_dimensions)
 
-maximum_sequence_length = 28
-echo_step = 5
-
-learning_rate = 0.01
-epoch_count = 10
+learning_rate = 0.0001
+epoch_count = 100
 batch_size = 100
 
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
@@ -189,82 +268,32 @@ def generate_echo_data():
     y = np.reshape(y, [-1, 1])
     return (x, y)
 
-def load_babi_file(path):
-    with open(path) as f:
-        lines = f.readlines()
-        lines = [x.split(' ') for x in lines]
-        stories = []
-        for x in lines:
-            if int(x[0]) == 1:
-                stories.append([])
-            stories[-1].append(x)
-        return stories
-
-def is_numeric(string):
-    try:
-        int(string)
-        return True
-    except:
-        return False
-
-def build_vectorization(stories):
-    ids = dict()
-    next_id = 0
-    for x in stories:
-        for y in x:
-            if y not in ids:
-                ids[y] = next_id
-                next_id = next_id + 1
-    return ids
-
-def one_hot(size, index):
-    a = np.ndarray(shape = (size,), dtype = float)
-    a[index] = 1
-    return a
-
-def vectorize_babi_file(stories):
-    stories = [[z for y in x for z in y if not is_numeric(z)] for x in stories]
-    for x in stories:
-        y = 0
-        while y < len(x):
-            if "?" in x[y]:
-                x[y] = x[y].replace("?", "")
-                x.insert(y + 1, "?")
-                y += 1
-            if "." in x[y]:
-                x[y] = x[y].replace(".", "")
-                x.insert(y + 1, ".")
-                y += 1
-            y += 1
-    ids = build_vectorization(stories)
-    stories = [[one_hot(len(ids), ids[y]) for y in x] for x in stories]
-    return stories
-
 node_counts = [input_count + (read_vector_count * memory_vector_size), hidden_count, class_count + interface_vector_size]
 lstm_dimensions = [hidden_count, class_count]
 weights = declare_weights(lstm_dimensions)
 biases = declare_biases(lstm_dimensions)
 
 predict = lstm_network(inputs, weights, biases)
-cost = tf.reduce_mean(tf.squared_difference(predict, targets))
+# cost = tf.reduce_mean(tf.squared_difference(predict, targets))
+cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits = predict, labels = targets))
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
-
-babi_data = load_babi_file(r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en\qa1_single-supporting-fact_test.txt")
-babi_data = vectorize_babi_file(babi_data)
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
     for epoch in range(epoch_count):
         avg_cost = 0.
-        batch_count = int(mnist.train.num_examples / batch_size)
+        batch_count = int(len(babi_io) / batch_size)
         for x in range(batch_count):
-            batch = [generate_echo_data() for x in range(batch_size)]
+            # batch = [generate_echo_data() for x in range(batch_size)]
+            batch = [random.choice(babi_io) for x in range(batch_size)]
             batch_inputs = np.array([x[0] for x in batch])
             batch_targets = np.array([x[1] for x in batch])
             # batch_inputs, batch_targets = mnist.train.next_batch(batch_size)
             # batch_inputs, batch_targets = convert_batch_to_sequence(batch_inputs, batch_targets, batch_size)
 
+            # print("starting session")
             _, c = sess.run([optimizer, cost], feed_dict={inputs: batch_inputs,
                                                           targets: batch_targets})
+            # print("ending session")
             avg_cost += c / batch_count
         print(avg_cost)
