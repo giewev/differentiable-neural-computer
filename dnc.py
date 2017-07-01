@@ -106,8 +106,8 @@ interface_vector_dimensions = [
 
 interface_vector_size = sum(interface_vector_dimensions)
 
-learning_rate = 0.0001
-epoch_count = 100
+learning_rate = 0.01
+epoch_count = 1000
 batch_size = 100
 
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
@@ -268,6 +268,14 @@ def generate_echo_data():
     y = np.reshape(y, [-1, 1])
     return (x, y)
 
+def sparse_sequence_softmax_cost(predict, targets):
+    cost_mask = tf.sign(tf.reduce_max(tf.abs(targets), reduction_indices=2))
+    cost = tf.nn.softmax_cross_entropy_with_logits(logits = predict, labels = targets)
+    cost *= cost_mask
+    cost = tf.reduce_sum(cost)
+    cost /= tf.reduce_mean(tf.reduce_sum(cost_mask))
+    return cost
+
 node_counts = [input_count + (read_vector_count * memory_vector_size), hidden_count, class_count + interface_vector_size]
 lstm_dimensions = [hidden_count, class_count]
 weights = declare_weights(lstm_dimensions)
@@ -275,7 +283,7 @@ biases = declare_biases(lstm_dimensions)
 
 predict = lstm_network(inputs, weights, biases)
 # cost = tf.reduce_mean(tf.squared_difference(predict, targets))
-cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits = predict, labels = targets))
+cost = sparse_sequence_softmax_cost(predict, targets)
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
 
 with tf.Session() as sess:
