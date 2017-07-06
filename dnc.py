@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.examples.tutorials.mnist import input_data
 import random
-mnist = input_data.read_data_sets("/tmp/data/", one_hot=True)
+# mnist = input_data.read_data_sets("/tmp/data/", one_hot=True)
 
 def load_babi_file(path):
     with open(path) as f:
@@ -74,7 +74,7 @@ def zero_pad_sequence(sequence, length):
         sequence.append(np.zeros(shape = np.shape(sequence[0]), dtype = float))
     return sequence
 
-babi_data = load_babi_file(r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en\qa1_single-supporting-fact_test.txt")
+babi_data = load_babi_file(r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en-10k\qa1_single-supporting-fact_train.txt")
 babi_ids, babi_data = vectorize_babi_file(babi_data)
 babi_data, babi_targets = build_babi_targets(babi_data, babi_ids)
 sequence_lengths = [len(x) for x in babi_data]
@@ -84,7 +84,7 @@ babi_targets = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_targ
 babi_io = list(zip(babi_data, babi_targets))
 
 input_count = 82
-hidden_count = 100
+hidden_count = 20
 class_count = 82
 
 echo_step = 5
@@ -106,9 +106,10 @@ interface_vector_dimensions = [
 
 interface_vector_size = sum(interface_vector_dimensions)
 
-learning_rate = 0.01
+learning_rate = .1
 epoch_count = 1000
-batch_size = 100
+test_ratio = .2
+batch_size = None
 
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
 targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
@@ -224,18 +225,19 @@ def basic_network(signal, weights, biases):
     return signal
 
 def lstm_network(signal, weights, biases):
-    lstm_cell = tf.contrib.rnn.BasicLSTMCell(hidden_count, state_is_tuple=True)
-    value, state = tf.nn.dynamic_rnn(lstm_cell, signal, dtype=tf.float32)
+    for x in range(len(weights)):
+        lstm_cell = tf.contrib.rnn.BasicLSTMCell(int(weights[x].shape[0]), state_is_tuple=True)
+        value, state = tf.nn.dynamic_rnn(lstm_cell, signal, dtype=tf.float32)
 
-    batch_size = tf.shape(value)[0]
-    sequence_weight = tf.tile(weights[0], [batch_size, 1])
-    sequence_weight = tf.reshape(sequence_weight, [batch_size, tf.shape(weights[0])[0], tf.shape(weights[0])[1]])
-    # sequence_weight = tf.transpose(sequence_weight, [1, 0, 2])
+        batch_size = tf.shape(value)[0]
+        sequence_weight = tf.tile(weights[x], [batch_size, 1])
+        sequence_weight = tf.reshape(sequence_weight, [batch_size, tf.shape(weights[x])[0], tf.shape(weights[x])[1]])
 
-    sequence_bias = tf.tile(biases[0], [batch_size * maximum_sequence_length])
-    sequence_bias = tf.reshape(sequence_bias, [batch_size, maximum_sequence_length, tf.shape(biases[0])[0]])
+        sequence_bias = tf.tile(biases[x], [batch_size * maximum_sequence_length])
+        sequence_bias = tf.reshape(sequence_bias, [batch_size, maximum_sequence_length, tf.shape(biases[x])[0]])
 
-    return tf.add(tf.matmul(value, sequence_weight), sequence_bias)
+        signal = tf.add(tf.matmul(value, sequence_weight), sequence_bias)
+    return signal
 
 # Defines a network with the additional ability to interface with external memory
 def controller_network(input_sequence, weights, biases):
@@ -276,6 +278,13 @@ def sparse_sequence_softmax_cost(predict, targets):
     cost /= tf.reduce_mean(tf.reduce_sum(cost_mask))
     return cost
 
+def correct_prediction_ratio(predict, targets):
+    target_mask = tf.sign(tf.reduce_max(tf.abs(targets), reduction_indices=2))
+    predict = tf.argmax(predict, axis = 2)
+    targets = tf.argmax(targets, axis = 2)
+    matches = tf.to_float(tf.equal(predict, targets))
+    return tf.reduce_sum(matches * target_mask) / tf.to_float(tf.shape(predict)[0])
+
 node_counts = [input_count + (read_vector_count * memory_vector_size), hidden_count, class_count + interface_vector_size]
 lstm_dimensions = [hidden_count, class_count]
 weights = declare_weights(lstm_dimensions)
@@ -285,23 +294,36 @@ predict = lstm_network(inputs, weights, biases)
 # cost = tf.reduce_mean(tf.squared_difference(predict, targets))
 cost = sparse_sequence_softmax_cost(predict, targets)
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
+accuracy = correct_prediction_ratio(predict, targets)
+
+random.shuffle(babi_io)
+test_data = babi_io[:int(test_ratio * len(babi_io))]
+train_data = babi_io[len(test_data):]
+
+if not batch_size:
+    batch_size = len(train_data)
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
     for epoch in range(epoch_count):
         avg_cost = 0.
-        batch_count = int(len(babi_io) / batch_size)
-        for x in range(batch_count):
-            # batch = [generate_echo_data() for x in range(batch_size)]
-            batch = [random.choice(babi_io) for x in range(batch_size)]
+        batch_count = int(len(train_data) / batch_size)
+        for batch_index in range(batch_count):
+            batch = train_data[batch_index * batch_size : (batch_index + 1) * batch_size]
             batch_inputs = np.array([x[0] for x in batch])
             batch_targets = np.array([x[1] for x in batch])
-            # batch_inputs, batch_targets = mnist.train.next_batch(batch_size)
-            # batch_inputs, batch_targets = convert_batch_to_sequence(batch_inputs, batch_targets, batch_size)
 
-            # print("starting session")
             _, c = sess.run([optimizer, cost], feed_dict={inputs: batch_inputs,
                                                           targets: batch_targets})
-            # print("ending session")
             avg_cost += c / batch_count
-        print(avg_cost)
+        random.shuffle(train_data)
+        # print(avg_cost)
+        if epoch % 10 == 0:
+            test_inputs = np.array([x[0] for x in test_data])
+            test_targets = np.array([x[1] for x in test_data])
+            test_cost = sess.run([cost, accuracy], feed_dict={inputs: test_inputs,
+                                                  targets: test_targets})
+            train_cost = sess.run([cost, accuracy], feed_dict={inputs: np.array([x[0] for x in train_data]),
+                                                  targets: np.array([x[1] for x in train_data])})
+            print("Epoch " + str(epoch) + " test:     " + str(test_cost))
+            print("Epoch " + str(epoch) + " training: " + str(train_cost))
