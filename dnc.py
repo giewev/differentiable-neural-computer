@@ -74,46 +74,6 @@ def zero_pad_sequence(sequence, length):
         sequence.append(np.zeros(shape = np.shape(sequence[0]), dtype = float))
     return sequence
 
-babi_data = load_babi_file(r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en-10k\qa1_single-supporting-fact_train.txt")
-babi_ids, babi_data = vectorize_babi_file(babi_data)
-babi_data, babi_targets = build_babi_targets(babi_data, babi_ids)
-sequence_lengths = [len(x) for x in babi_data]
-maximum_sequence_length = max(sequence_lengths)
-babi_data = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_data]
-babi_targets = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_targets]
-babi_io = list(zip(babi_data, babi_targets))
-
-input_count = 82
-hidden_count = 20
-class_count = 82
-
-echo_step = 5
-
-read_vector_count = 1
-memory_vector_size = 10
-memory_locations = 10
-interface_vector_dimensions = [
-    read_vector_count * memory_vector_size, # Read keys
-    read_vector_count, # Read strengths
-    memory_vector_size, # Write key
-    memory_vector_size, # Erase vector
-    memory_vector_size, # Write vector
-    read_vector_count, # Free gates
-    read_vector_count * 3, # read modes
-    1, # Allocation gate
-    1, # Write gate
-    1] # Write strength
-
-interface_vector_size = sum(interface_vector_dimensions)
-
-learning_rate = .1
-epoch_count = 1000
-test_ratio = .2
-batch_size = None
-
-inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
-targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
-
 # A class that wraps a batch of interface vectors in order to provide the specific factors from them
 class InterfaceVector(object):
     def __init__(self, vector):
@@ -278,7 +238,7 @@ def sparse_sequence_softmax_cost(predict, targets):
     cost = tf.nn.softmax_cross_entropy_with_logits(logits = predict, labels = targets)
     cost *= cost_mask
     cost = tf.reduce_sum(cost)
-    cost /= tf.reduce_mean(tf.reduce_sum(cost_mask))
+    cost /= tf.reduce_sum(cost_mask)
     return cost
 
 def correct_prediction_ratio(predict, targets):
@@ -287,6 +247,46 @@ def correct_prediction_ratio(predict, targets):
     targets = tf.argmax(targets, axis = 2)
     matches = tf.to_float(tf.equal(predict, targets))
     return tf.reduce_sum(matches * target_mask) / tf.to_float(tf.shape(predict)[0])
+
+babi_data = load_babi_file(r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en-10k\qa1_single-supporting-fact_train.txt")
+babi_ids, babi_data = vectorize_babi_file(babi_data)
+babi_data, babi_targets = build_babi_targets(babi_data, babi_ids)
+sequence_lengths = [len(x) for x in babi_data]
+maximum_sequence_length = max(sequence_lengths)
+babi_data = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_data]
+babi_targets = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_targets]
+babi_io = list(zip(babi_data, babi_targets))
+
+input_count = 82
+hidden_count = 20
+class_count = 82
+
+echo_step = 5
+
+read_vector_count = 1
+memory_vector_size = 10
+memory_locations = 10
+interface_vector_dimensions = [
+    read_vector_count * memory_vector_size, # Read keys
+    read_vector_count, # Read strengths
+    memory_vector_size, # Write key
+    memory_vector_size, # Erase vector
+    memory_vector_size, # Write vector
+    read_vector_count, # Free gates
+    read_vector_count * 3, # read modes
+    1, # Allocation gate
+    1, # Write gate
+    1] # Write strength
+
+interface_vector_size = sum(interface_vector_dimensions)
+
+learning_rate = .01
+epoch_count = 1000
+test_ratio = .2
+batch_size = None
+
+inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
+targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
 
 node_counts = [input_count + (read_vector_count * memory_vector_size), hidden_count, class_count + interface_vector_size]
 lstm_dimensions = [hidden_count, hidden_count, class_count]
@@ -302,26 +302,23 @@ accuracy = correct_prediction_ratio(predict, targets)
 random.shuffle(babi_io)
 test_data = babi_io[:int(test_ratio * len(babi_io))]
 train_data = babi_io[len(test_data):]
-
 if not batch_size:
     batch_size = len(train_data)
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
     for epoch in range(epoch_count):
-        avg_cost = 0.
         batch_count = int(len(train_data) / batch_size)
         for batch_index in range(batch_count):
             batch = train_data[batch_index * batch_size : (batch_index + 1) * batch_size]
             batch_inputs = np.array([x[0] for x in batch])
             batch_targets = np.array([x[1] for x in batch])
 
-            _, c = sess.run([optimizer, cost], feed_dict={inputs: batch_inputs,
-                                                          targets: batch_targets})
-            avg_cost += c / batch_count
+            _ = sess.run([optimizer], feed_dict={inputs: batch_inputs,
+                                                    targets: batch_targets})
         random.shuffle(train_data)
-        # print(avg_cost)
-        if epoch % 10 == 0:
+
+        if epoch % 1 == 0:
             test_inputs = np.array([x[0] for x in test_data])
             test_targets = np.array([x[1] for x in test_data])
             test_cost = sess.run([cost, accuracy], feed_dict={inputs: test_inputs,
