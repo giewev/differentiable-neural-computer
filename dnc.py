@@ -156,7 +156,7 @@ def row_cosine_similarity(x):
 
 # Calculates a memory access weighting based on a similarity lookup
 def content_weighting(memory, key, strength):
-    return tf.map_fn(row_cosine_similarity, (memory, key, strength))
+    return tf.map_fn(row_cosine_similarity, [memory, key, strength], dtype = (tf.float32))
 
 # Writes an update to the memory matrix based on the given interface vector
 def write_to_memory(interface, memory):
@@ -290,10 +290,10 @@ targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
 
 node_counts = [input_count + (read_vector_count * memory_vector_size), hidden_count, class_count + interface_vector_size]
 lstm_dimensions = [hidden_count, hidden_count, class_count]
-weights = declare_weights(lstm_dimensions)
-biases = declare_biases(lstm_dimensions)
+weights = declare_weights(node_counts)
+biases = declare_biases(node_counts)
 
-predict = lstm_network(inputs, weights, biases)
+predict = controller_network(inputs, weights, biases)
 # cost = tf.reduce_mean(tf.squared_difference(predict, targets))
 cost = sparse_sequence_softmax_cost(predict, targets)
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
