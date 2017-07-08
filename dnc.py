@@ -221,22 +221,25 @@ def basic_network(signal, weights, biases):
         signal = tf.add(tf.matmul(signal, weights[layer]), biases[layer])
         if layer + 1 in weights:
             signal = tf.nn.relu(signal)
+
         layer += 1
     return signal
 
 def lstm_network(signal, weights, biases):
     for x in range(len(weights)):
-        lstm_cell = tf.contrib.rnn.BasicLSTMCell(int(weights[x].shape[0]), state_is_tuple=True)
-        value, state = tf.nn.dynamic_rnn(lstm_cell, signal, dtype=tf.float32)
+        with tf.variable_scope("LSTM" + str(x)):
+            lstm_cell = tf.contrib.rnn.BasicLSTMCell(int(weights[x].shape[0]), state_is_tuple=True, reuse=tf.get_variable_scope().reuse)
+            value, state = tf.nn.dynamic_rnn(lstm_cell, signal, dtype=tf.float32)
 
-        batch_size = tf.shape(value)[0]
-        sequence_weight = tf.tile(weights[x], [batch_size, 1])
-        sequence_weight = tf.reshape(sequence_weight, [batch_size, tf.shape(weights[x])[0], tf.shape(weights[x])[1]])
+            batch_size = tf.shape(value)[0]
+            sequence_weight = tf.tile(weights[x], [batch_size, 1])
+            sequence_weight = tf.reshape(sequence_weight, [batch_size, tf.shape(weights[x])[0], tf.shape(weights[x])[1]])
 
-        sequence_bias = tf.tile(biases[x], [batch_size * maximum_sequence_length])
-        sequence_bias = tf.reshape(sequence_bias, [batch_size, maximum_sequence_length, tf.shape(biases[x])[0]])
+            sequence_bias = tf.tile(biases[x], [batch_size * maximum_sequence_length])
+            sequence_bias = tf.reshape(sequence_bias, [batch_size, maximum_sequence_length, tf.shape(biases[x])[0]])
 
-        signal = tf.add(tf.matmul(value, sequence_weight), sequence_bias)
+            signal = tf.add(tf.matmul(value, sequence_weight), sequence_bias)
+            signal = tf.reshape(signal, [batch_size, maximum_sequence_length, int(weights[x].shape[1])])
     return signal
 
 # Defines a network with the additional ability to interface with external memory
@@ -286,7 +289,7 @@ def correct_prediction_ratio(predict, targets):
     return tf.reduce_sum(matches * target_mask) / tf.to_float(tf.shape(predict)[0])
 
 node_counts = [input_count + (read_vector_count * memory_vector_size), hidden_count, class_count + interface_vector_size]
-lstm_dimensions = [hidden_count, class_count]
+lstm_dimensions = [hidden_count, hidden_count, class_count]
 weights = declare_weights(lstm_dimensions)
 biases = declare_biases(lstm_dimensions)
 
