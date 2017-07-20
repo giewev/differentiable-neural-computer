@@ -80,7 +80,7 @@ class InterfaceVector(object):
         self.vector = vector
 
     def read_key(self, index):
-        return self.vector[:, (index - 1) * memory_vector_size : index * memory_vector_size]
+        return self.vector[:, index * memory_vector_size : (index + 1) * memory_vector_size]
 
     def read_strength(self, index):
         start = read_vector_count * memory_vector_size
@@ -117,6 +117,22 @@ class InterfaceVector(object):
     def write_strength(self):
         start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
         return self.vector[:, start + 2]
+
+class ControllerState(object):
+    def __init__(self):
+        self.read_vectors = tf.zeros([tf.shape(inputs)[0], read_vector_count, memory_vector_size], "float")
+        self.memory = tf.zeros([tf.shape(inputs)[0], memory_locations, memory_vector_size], "float")
+        self.links = tf.zeros([tf.shape(inputs)[0], memory_locations, memory_locations], "float")
+        self.output_vector = tf.zeros([tf.shape(inputs)[0], class_count], "float")
+
+    def to_tuple(self):
+        return (self.read_vectors, self.memory, self.links, self.output_vector)
+
+    def load_tuple(self, tup):
+        self.read_vectors = tup[0]
+        self.memory = tup[1]
+        self.links = tup[2]
+        self.output_vector = tup[3]
 
 # Creates a set of weights based on the given layer sizes
 def declare_weights(node_counts):
@@ -169,10 +185,23 @@ def write_to_memory(interface, memory):
 
     lookup_weighting = content_weighting(memory, lookup_key, strength)
     allocation_weighting = None # Replace with available space heuristic
-    weighting = lookup_weighting * mode + allocation_weighting * (1-mode)
+    weighting = tf.transpose(lookup_weighting, [1, 0]) * mode #+ allocation_weighting * (1-mode)
     memory = memory * (1 - tf.matmul(weighting, erase_vector)) + tf.matmul(weighting, write_vector)
 
     return memory
+
+def read_from_memory(interface, memory):
+    read_vectors = []
+    for x in range(read_vector_count):
+        lookup_key = interface.read_key(x)
+        strength = interface.read_strength(x)
+        weighting = content_weighting(memory, lookup_key, strength)
+        weighting = tf.tile(weighting, [1, memory_vector_size])
+        weighting = tf.reshape(weighting, [tf.shape(weighting)[0], memory_locations, memory_vector_size])
+        read_vector = tf.reduce_sum(memory * weighting, axis = 1)
+
+        read_vectors.append(read_vector)
+    return tf.stack(read_vectors, axis = 1)
 
 # Defines a simple feed forward neural network
 def basic_network(signal, weights, biases):
@@ -202,26 +231,32 @@ def lstm_network(signal, weights, biases):
             signal = tf.reshape(signal, [batch_size, maximum_sequence_length, int(weights[x].shape[1])])
     return signal
 
+def build_controller_iterator(weights, biases):
+    def controller_iteration(prev_state_tuple, signal):
+        prev_state = ControllerState()
+        prev_state.load_tuple(prev_state_tuple)
+        next_state = ControllerState()
+        flattened_read_vectors = tf.reshape(prev_state.read_vectors, [tf.shape(prev_state.read_vectors)[0], -1])
+        controller_input = tf.concat([signal, flattened_read_vectors], 1)
+        controller_output = basic_network(controller_input, weights, biases)
+        next_state.output_vector = tf.matmul(controller_output[:, : class_count], weights['out'])
+        
+        interface_vector = InterfaceVector(tf.matmul(controller_output[:, class_count :], weights['interface']))
+        next_state.memory = write_to_memory(interface_vector, prev_state.memory)
+        next_state.read_vectors = read_from_memory(interface_vector, prev_state.memory)
+
+        return next_state.to_tuple()
+    return controller_iteration
+
 # Defines a network with the additional ability to interface with external memory
 def controller_network(input_sequence, weights, biases):
     add_controller_weights(weights)
-    outputs = []
-    read_vectors = tf.zeros([tf.shape(inputs)[0], read_vector_count, memory_vector_size], "float")
-    memory = tf.zeros([tf.shape(inputs)[0], memory_locations, memory_vector_size], "float")
-    links = tf.zeros([tf.shape(inputs)[0], memory_locations, memory_locations], "float")
+    controller_iteration = build_controller_iterator(weights, biases)
+    input_sequence = tf.transpose(input_sequence, [1, 0, 2])
+    result_states = tf.scan(controller_iteration, input_sequence, initializer = ControllerState().to_tuple())
 
-    for x in range(maximum_sequence_length):
-        flattened_read_vectors = tf.reshape(read_vectors, [tf.shape(read_vectors)[0], -1])
-        current_input_vector = tf.reshape(input_sequence[:, x, :], [tf.shape(input_sequence)[0], tf.shape(input_sequence)[2]])
-        controller_input = tf.concat([current_input_vector, flattened_read_vectors], 1)
-        controller_output = basic_network(controller_input, weights, biases)
-        outputs.append(tf.matmul(controller_output[:, : class_count], weights['out']))
-        interface_vector = InterfaceVector(tf.matmul(controller_output[:, class_count :], weights['interface']))
-
-        memory = write_to_memory(interface_vector, memory)
-
-    outputs = tf.reshape(outputs, [-1, maximum_sequence_length, class_count])
-    return outputs
+    result_outputs = result_states[3]
+    return result_outputs
 
 # Generates a random sequence with an expected output of a delayed echo
 def generate_echo_data():
@@ -235,6 +270,7 @@ def generate_echo_data():
 
 def sparse_sequence_softmax_cost(predict, targets):
     cost_mask = tf.sign(tf.reduce_max(tf.abs(targets), reduction_indices=2))
+    cost_mask = tf.transpose(cost_mask, [1, 0])
     cost = tf.nn.softmax_cross_entropy_with_logits(logits = predict, labels = targets)
     cost *= cost_mask
     cost = tf.reduce_sum(cost)
@@ -245,6 +281,7 @@ def correct_prediction_ratio(predict, targets):
     target_mask = tf.sign(tf.reduce_max(tf.abs(targets), reduction_indices=2))
     predict = tf.argmax(predict, axis = 2)
     targets = tf.argmax(targets, axis = 2)
+    predict = tf.transpose(predict, [1, 0])
     matches = tf.to_float(tf.equal(predict, targets))
     return tf.reduce_sum(matches * target_mask) / tf.to_float(tf.shape(predict)[0])
 
@@ -263,9 +300,9 @@ class_count = 82
 
 echo_step = 5
 
-read_vector_count = 1
+read_vector_count = 2
 memory_vector_size = 10
-memory_locations = 10
+memory_locations = 13
 interface_vector_dimensions = [
     read_vector_count * memory_vector_size, # Read keys
     read_vector_count, # Read strengths
@@ -283,7 +320,7 @@ interface_vector_size = sum(interface_vector_dimensions)
 learning_rate = .01
 epoch_count = 1000
 test_ratio = .2
-batch_size = None
+batch_size = 200
 
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
 targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
@@ -307,6 +344,7 @@ if not batch_size:
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
+
     for epoch in range(epoch_count):
         batch_count = int(len(train_data) / batch_size)
         for batch_index in range(batch_count):
@@ -314,8 +352,8 @@ with tf.Session() as sess:
             batch_inputs = np.array([x[0] for x in batch])
             batch_targets = np.array([x[1] for x in batch])
 
-            _ = sess.run([optimizer], feed_dict={inputs: batch_inputs,
-                                                    targets: batch_targets})
+            _ = sess.run([optimizer], feed_dict={inputs: batch_inputs, targets: batch_targets})
+
         random.shuffle(train_data)
 
         if epoch % 1 == 0:
