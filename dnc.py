@@ -1,6 +1,5 @@
 import tensorflow as tf
 import numpy as np
-from tensorflow.examples.tutorials.mnist import input_data
 import random
 # mnist = input_data.read_data_sets("/tmp/data/", one_hot=True)
 
@@ -154,25 +153,19 @@ def add_controller_weights(weights):
     weights['out'] = tf.Variable(tf.random_normal([class_count, class_count]))
     weights['interface'] = tf.Variable(tf.random_normal([interface_vector_size, interface_vector_size]))
 
-# Calculates the cosine similarity between two vectors
-def cosine_similarity(a, b):
-    norm_a = tf.nn.l2_normalize(a,0)        
-    norm_b = tf.nn.l2_normalize(b,0)
-    return tf.reduce_sum(tf.multiply(norm_a,norm_b))
-
-# Calculates the cosine similarity between each row of a matrix and a given vector
-def row_cosine_similarity(x):
-    memory = x[0]
-    key = x[1]
-    strength = x[2]
-
-    def check_similarity(row):
-        return cosine_similarity(row, key)
-    return strength * tf.map_fn(check_similarity, memory)
+def vector_norms(x):
+  squared_norms = tf.reduce_sum(x * x, axis=2, keep_dims=True)
+  return tf.sqrt(squared_norms)
 
 # Calculates a memory access weighting based on a similarity lookup
 def content_weighting(memory, key, strength):
-    return tf.map_fn(row_cosine_similarity, [memory, key, strength], dtype = (tf.float32))
+    key = tf.reshape(key, [-1, 1, memory_vector_size])
+    product = tf.matmul(key, memory, adjoint_b=True)
+    memory_norms = vector_norms(memory)
+    key_norms = vector_norms(key)
+    norm = tf.matmul(key_norms, memory_norms, adjoint_b=True)
+    similarity = product / norm
+    return tf.reshape(similarity, [-1, memory_locations])
 
 # Writes an update to the memory matrix based on the given interface vector
 def write_to_memory(interface, memory):
@@ -285,7 +278,7 @@ def correct_prediction_ratio(predict, targets):
     matches = tf.to_float(tf.equal(predict, targets))
     return tf.reduce_sum(matches * target_mask) / tf.to_float(tf.shape(predict)[0])
 
-babi_data = load_babi_file(r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en-10k\qa1_single-supporting-fact_train.txt")
+babi_data = load_babi_file(r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar-20170708T211118Z-001\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en-10k\qa1_single-supporting-fact_train.txt")
 babi_ids, babi_data = vectorize_babi_file(babi_data)
 babi_data, babi_targets = build_babi_targets(babi_data, babi_ids)
 sequence_lengths = [len(x) for x in babi_data]
@@ -295,14 +288,14 @@ babi_targets = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_targ
 babi_io = list(zip(babi_data, babi_targets))
 
 input_count = 82
-hidden_count = 20
+hidden_count = 100
 class_count = 82
 
 echo_step = 5
 
-read_vector_count = 2
+read_vector_count = 1
 memory_vector_size = 10
-memory_locations = 13
+memory_locations = 10
 interface_vector_dimensions = [
     read_vector_count * memory_vector_size, # Read keys
     read_vector_count, # Read strengths
@@ -320,7 +313,7 @@ interface_vector_size = sum(interface_vector_dimensions)
 learning_rate = .01
 epoch_count = 1000
 test_ratio = .2
-batch_size = 200
+batch_size = 30
 
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
 targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
