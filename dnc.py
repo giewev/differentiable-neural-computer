@@ -73,6 +73,9 @@ def zero_pad_sequence(sequence, length):
         sequence.append(np.zeros(shape = np.shape(sequence[0]), dtype = float))
     return sequence
 
+def oneplus(x):
+    return 1 + tf.log(1 + tf.exp(x))
+
 # A class that wraps a batch of interface vectors in order to provide the specific factors from them
 class InterfaceVector(object):
     def __init__(self, vector):
@@ -83,7 +86,7 @@ class InterfaceVector(object):
 
     def read_strength(self, index):
         start = read_vector_count * memory_vector_size
-        return self.vector[:, start + index]
+        return oneplus(self.vector[:, start + index])
 
     def write_key(self):
         start = read_vector_count * (memory_vector_size + 1)
@@ -91,7 +94,7 @@ class InterfaceVector(object):
 
     def erase_vector(self):
         start = read_vector_count * memory_vector_size + memory_vector_size + read_vector_count
-        return self.vector[:, start : start + memory_vector_size]
+        return tf.sigmoid(self.vector[:, start : start + memory_vector_size])
 
     def write_vector(self):
         start = read_vector_count * memory_vector_size + read_vector_count + (memory_vector_size * 2)
@@ -99,23 +102,23 @@ class InterfaceVector(object):
 
     def free_gate(self, index):
         start = read_vector_count * memory_vector_size + read_vector_count + (memory_vector_size * 3)
-        return self.vector[:, start + index]
+        return tf.sigmoid(self.vector[:, start + index])
 
     def read_modes(self, index):
         start = read_vector_count * memory_vector_size + (read_vector_count * 2) + (memory_vector_size * 3)
-        return self.vector[:, start + ((index - 1) * 3) : start + (index * 3)]
+        return tf.nn.softmax(self.vector[:, start + ((index - 1) * 3) : start + (index * 3)])
 
     def allocation_gate(self):
         start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
-        return self.vector[:, start]
+        return tf.sigmoid(self.vector[:, start])
 
     def write_gate(self):
         start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
-        return self.vector[:, start + 1]
+        return tf.sigmoid(self.vector[:, start + 1])
 
     def write_strength(self):
         start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
-        return self.vector[:, start + 2]
+        return oneplus(self.vector[:, start + 2])
 
 class ControllerState(object):
     def __init__(self):
@@ -164,8 +167,8 @@ def content_weighting(memory, key, strength):
     memory_norms = vector_norms(memory)
     key_norms = vector_norms(key)
     norm = tf.matmul(key_norms, memory_norms, adjoint_b=True)
-    similarity = product / norm
-    return tf.reshape(similarity, [-1, memory_locations])
+    similarity = product / (norm + 0.000001)
+    return tf.nn.softmax(tf.reshape(similarity, [-1, memory_locations]))
 
 # Writes an update to the memory matrix based on the given interface vector
 def write_to_memory(interface, memory):
@@ -178,8 +181,12 @@ def write_to_memory(interface, memory):
 
     lookup_weighting = content_weighting(memory, lookup_key, strength)
     allocation_weighting = None # Replace with available space heuristic
-    weighting = tf.transpose(lookup_weighting, [1, 0]) * mode #+ allocation_weighting * (1-mode)
-    memory = memory * (1 - tf.matmul(weighting, erase_vector)) + tf.matmul(weighting, write_vector)
+    weighting = tf.transpose(tf.transpose(lookup_weighting, [1, 0]) * mode, [1, 0]) #+ allocation_weighting * (1-mode)
+    weighting = tf.expand_dims(weighting, 2)
+    write_vector = tf.expand_dims(write_vector, 1)
+    erase_vector = tf.expand_dims(erase_vector, 1)
+    # memory = memory * (1 - tf.matmul(weighting, erase_vector)) + tf.matmul(weighting, write_vector)
+    memory = memory + tf.matmul(weighting, write_vector)
 
     return memory
 
@@ -253,12 +260,10 @@ def controller_network(input_sequence, weights, biases):
 
 # Generates a random sequence with an expected output of a delayed echo
 def generate_echo_data():
-    x = np.array(np.random.choice(2, maximum_sequence_length, p=[0.5, 0.5]))
+    x = np.eye(class_count)[np.random.choice(class_count, maximum_sequence_length)]
     y = np.roll(x, echo_step)
     y[0:echo_step] = 0
 
-    x = np.reshape(x, [-1, 1])
-    y = np.reshape(y, [-1, 1])
     return (x, y)
 
 def sparse_sequence_softmax_cost(predict, targets):
@@ -294,8 +299,8 @@ class_count = 82
 echo_step = 5
 
 read_vector_count = 1
-memory_vector_size = 10
-memory_locations = 10
+memory_vector_size = 8
+memory_locations = 15
 interface_vector_dimensions = [
     read_vector_count * memory_vector_size, # Read keys
     read_vector_count, # Read strengths
@@ -310,10 +315,10 @@ interface_vector_dimensions = [
 
 interface_vector_size = sum(interface_vector_dimensions)
 
-learning_rate = .01
+learning_rate = .001
 epoch_count = 1000
 test_ratio = .2
-batch_size = 30
+batch_size = 20
 
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
 targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
@@ -345,6 +350,7 @@ with tf.Session() as sess:
             batch_inputs = np.array([x[0] for x in batch])
             batch_targets = np.array([x[1] for x in batch])
 
+            # print(sess.run([predict], feed_dict={inputs: batch_inputs, targets: batch_targets}))
             _ = sess.run([optimizer], feed_dict={inputs: batch_inputs, targets: batch_targets})
 
         random.shuffle(train_data)
