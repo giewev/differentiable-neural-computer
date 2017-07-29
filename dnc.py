@@ -126,15 +126,21 @@ class ControllerState(object):
         self.memory = tf.zeros([tf.shape(inputs)[0], memory_locations, memory_vector_size], "float")
         self.links = tf.zeros([tf.shape(inputs)[0], memory_locations, memory_locations], "float")
         self.output_vector = tf.zeros([tf.shape(inputs)[0], class_count], "float")
+        self.precedence = tf.zeros([tf.shape(inputs)[0], memory_locations])
+        self.write_weighting = tf.zeros([tf.shape(inputs)[0], memory_locations])
+        self.read_weightings = tf.zeros([tf.shape(inputs)[0], read_vector_count, memory_locations])
 
     def to_tuple(self):
-        return (self.read_vectors, self.memory, self.links, self.output_vector)
+        return (self.read_vectors, self.memory, self.links, self.output_vector, self.precedence, self.write_weighting, self.read_weightings)
 
     def load_tuple(self, tup):
         self.read_vectors = tup[0]
         self.memory = tup[1]
         self.links = tup[2]
         self.output_vector = tup[3]
+        self.precedence = tup[4]
+        self.write_weighting = tup[5]
+        self.read_weightings = tup[6]
 
 # Creates a set of weights based on the given layer sizes
 def declare_weights(node_counts):
@@ -182,26 +188,49 @@ def write_to_memory(interface, memory):
     lookup_weighting = content_weighting(memory, lookup_key, strength)
     allocation_weighting = None # Replace with available space heuristic
     weighting = tf.transpose(tf.transpose(lookup_weighting, [1, 0]) * mode, [1, 0]) #+ allocation_weighting * (1-mode)
-    weighting = tf.expand_dims(weighting, 2)
+    expanded_weighting = tf.expand_dims(weighting, 2)
     write_vector = tf.expand_dims(write_vector, 1)
     erase_vector = tf.expand_dims(erase_vector, 1)
     # memory = memory * (1 - tf.matmul(weighting, erase_vector)) + tf.matmul(weighting, write_vector)
-    memory = memory + tf.matmul(weighting, write_vector)
+    memory = memory + tf.matmul(expanded_weighting, write_vector)
 
-    return memory
+    return memory, weighting
 
-def read_from_memory(interface, memory):
+def link_weightings(links, prev_read, modes):
+    prev_read_3d = tf.expand_dims(prev_read, 2)
+    forward = tf.reduce_sum(tf.matmul(links, prev_read_3d), axis = 2) * tf.expand_dims(modes[:, 0], 1)
+    backward = tf.reduce_sum(tf.matmul(tf.transpose(links, [0, 2, 1]), prev_read_3d), axis = 2) * tf.expand_dims(modes[:, 2], 1)
+    return forward, backward
+
+def read_from_memory(interface, memory, links, prev_read):
     read_vectors = []
+    weightings = []
     for x in range(read_vector_count):
         lookup_key = interface.read_key(x)
         strength = interface.read_strength(x)
-        weighting = content_weighting(memory, lookup_key, strength)
+        modes = interface.read_modes(x)
+        lookup_weighting = content_weighting(memory, lookup_key, strength) * tf.expand_dims(modes[:, 1], 1)
+        forward_weighting, backward_weighting = link_weightings(links, prev_read[:, x, :], modes)
+        weighting = lookup_weighting + forward_weighting + backward_weighting
+        weightings.append(weighting)
         weighting = tf.tile(weighting, [1, memory_vector_size])
         weighting = tf.reshape(weighting, [tf.shape(weighting)[0], memory_locations, memory_vector_size])
         read_vector = tf.reduce_sum(memory * weighting, axis = 1)
 
         read_vectors.append(read_vector)
-    return tf.stack(read_vectors, axis = 1)
+    print(weightings[0].shape)
+    return tf.stack(read_vectors, axis = 1), tf.stack(weightings, axis = 1)
+
+def update_precendence_weighting(old_precendence, write_weighting):
+    return (1 - tf.reduce_sum(write_weighting)) * old_precendence + write_weighting
+
+def update_links(old_links, old_precendence, write_weighting):
+    print(write_weighting.shape)
+    left_weight = tf.expand_dims(write_weighting, 2)
+    right_weight = tf.expand_dims(write_weighting, 1)
+    right_precedence = tf.expand_dims(old_precendence, 1)
+    mod = (1 - left_weight - right_weight)
+    return (mod * old_links) + (left_weight * right_precedence)
 
 # Defines a simple feed forward neural network
 def basic_network(signal, weights, biases):
@@ -242,9 +271,14 @@ def build_controller_iterator(weights, biases):
         next_state.output_vector = tf.matmul(controller_output[:, : class_count], weights['out'])
         
         interface_vector = InterfaceVector(tf.matmul(controller_output[:, class_count :], weights['interface']))
-        next_state.memory = write_to_memory(interface_vector, prev_state.memory)
-        next_state.read_vectors = read_from_memory(interface_vector, prev_state.memory)
+        next_state.memory, next_state.write_weighting = write_to_memory(interface_vector, prev_state.memory)
+        next_state.read_vectors,next_state.read_weightings = read_from_memory(interface_vector, prev_state.memory, prev_state.links, prev_state.read_weightings)
+        next_state.precedence = update_precendence_weighting(prev_state.precedence, next_state.write_weighting)
+        next_state.links = update_links(prev_state.links, prev_state.precedence, next_state.write_weighting)
+        print(next_state.links.shape)
+        print(next_state.precedence.shape)
 
+        print([x.shape for x in next_state.to_tuple()])
         return next_state.to_tuple()
     return controller_iteration
 
