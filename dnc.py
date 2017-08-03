@@ -126,12 +126,20 @@ class ControllerState(object):
         self.memory = tf.zeros([tf.shape(inputs)[0], memory_locations, memory_vector_size], "float")
         self.links = tf.zeros([tf.shape(inputs)[0], memory_locations, memory_locations], "float")
         self.output_vector = tf.zeros([tf.shape(inputs)[0], class_count], "float")
-        self.precedence = tf.zeros([tf.shape(inputs)[0], memory_locations])
         self.write_weighting = tf.zeros([tf.shape(inputs)[0], memory_locations])
         self.read_weightings = tf.zeros([tf.shape(inputs)[0], read_vector_count, memory_locations])
+        self.precedence = tf.zeros([tf.shape(inputs)[0], memory_locations])
+        self.usage = tf.zeros([tf.shape(inputs)[0], memory_locations])
 
     def to_tuple(self):
-        return (self.read_vectors, self.memory, self.links, self.output_vector, self.precedence, self.write_weighting, self.read_weightings)
+        return (self.read_vectors,
+                self.memory,
+                self.links,
+                self.output_vector,
+                self.precedence,
+                self.write_weighting,
+                self.read_weightings,
+                self.usage)
 
     def load_tuple(self, tup):
         self.read_vectors = tup[0]
@@ -141,6 +149,7 @@ class ControllerState(object):
         self.precedence = tup[4]
         self.write_weighting = tup[5]
         self.read_weightings = tup[6]
+        self.usage = tup[7]
 
 # Creates a set of weights based on the given layer sizes
 def declare_weights(node_counts):
@@ -176,8 +185,38 @@ def content_weighting(memory, key, strength):
     similarity = product / (norm + 0.000001)
     return tf.nn.softmax(tf.reshape(similarity, [-1, memory_locations]))
 
+def retention_vector(free_gates, read_weightings):
+    # Free: ?, read_count
+    # weights: ?, read_count, memory_locations
+    # result: ?, memory_locations
+    free_gates = tf.expand_dims(free_gates, 2)
+    return tf.reduce_prod(1 - (free_gates * read_weightings), axis = 1)
+
+def update_usage(old_usage, interface, write_weighting, read_weightings):
+    usage = old_usage + write_weighting
+    usage -= old_usage * write_weighting
+    free_gates = tf.stack([interface.free_gate(x) for x in range(read_vector_count)])
+
+    return usage * retention_vector(free_gates, read_weightings)
+
+def multi_map_fn(func, args):
+    slice_indices = tf.range(tf.shape(args[0])[0])
+    return tf.map_fn(lambda x: func(*[arg[x] for arg in args]), slice_indices)
+
+def allocation_weighting(usage):
+    space = 1 - usage
+    most_free, free_indices = tf.nn.top_k(space, k = memory_locations)
+    most_free = 1 - most_free
+    rolling_space = tf.cumprod(most_free, axis = 1)
+    allocation = most_free * rolling_space
+
+    # unsorting_indices = batch_apply(tf.invert_permutation, free_indices)
+    # return batch_apply(tf.gather, allocation, unsorting_indices)
+    unsorting_indices = tf.map_fn(tf.invert_permutation, free_indices)
+    return multi_map_fn(tf.gather, [allocation, unsorting_indices])
+
 # Writes an update to the memory matrix based on the given interface vector
-def write_to_memory(interface, memory):
+def write_to_memory(interface, memory, usage):
     lookup_key = interface.write_key()
     write_vector = interface.write_vector()
     strength = interface.write_strength()
@@ -186,7 +225,7 @@ def write_to_memory(interface, memory):
     erase_vector = interface.erase_vector()
 
     lookup_weighting = content_weighting(memory, lookup_key, strength)
-    allocation_weighting = None # Replace with available space heuristic
+    alloc_weighting = allocation_weighting(usage)
     weighting = tf.transpose(tf.transpose(lookup_weighting, [1, 0]) * mode, [1, 0]) #+ allocation_weighting * (1-mode)
     expanded_weighting = tf.expand_dims(weighting, 2)
     write_vector = tf.expand_dims(write_vector, 1)
@@ -271,14 +310,12 @@ def build_controller_iterator(weights, biases):
         next_state.output_vector = tf.matmul(controller_output[:, : class_count], weights['out'])
         
         interface_vector = InterfaceVector(tf.matmul(controller_output[:, class_count :], weights['interface']))
-        next_state.memory, next_state.write_weighting = write_to_memory(interface_vector, prev_state.memory)
+        next_state.memory, next_state.write_weighting = write_to_memory(interface_vector, prev_state.memory, prev_state.usage)
         next_state.read_vectors,next_state.read_weightings = read_from_memory(interface_vector, prev_state.memory, prev_state.links, prev_state.read_weightings)
         next_state.precedence = update_precendence_weighting(prev_state.precedence, next_state.write_weighting)
         next_state.links = update_links(prev_state.links, prev_state.precedence, next_state.write_weighting)
-        print(next_state.links.shape)
-        print(next_state.precedence.shape)
+        next_state.usage = update_usage(prev_state.usage, interface_vector, next_state.write_weighting, next_state.read_weightings)
 
-        print([x.shape for x in next_state.to_tuple()])
         return next_state.to_tuple()
     return controller_iteration
 
