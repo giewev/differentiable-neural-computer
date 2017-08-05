@@ -257,14 +257,12 @@ def read_from_memory(interface, memory, links, prev_read):
         read_vector = tf.reduce_sum(memory * weighting, axis = 1)
 
         read_vectors.append(read_vector)
-    print(weightings[0].shape)
     return tf.stack(read_vectors, axis = 1), tf.stack(weightings, axis = 1)
 
 def update_precendence_weighting(old_precendence, write_weighting):
     return (1 - tf.reduce_sum(write_weighting)) * old_precendence + write_weighting
 
 def update_links(old_links, old_precendence, write_weighting):
-    print(write_weighting.shape)
     left_weight = tf.expand_dims(write_weighting, 2)
     right_weight = tf.expand_dims(write_weighting, 1)
     right_precedence = tf.expand_dims(old_precendence, 1)
@@ -326,8 +324,7 @@ def controller_network(input_sequence, weights, biases):
     input_sequence = tf.transpose(input_sequence, [1, 0, 2])
     result_states = tf.scan(controller_iteration, input_sequence, initializer = ControllerState().to_tuple())
 
-    result_outputs = result_states[3]
-    return result_outputs
+    return result_states[3]
 
 # Generates a random sequence with an expected output of a delayed echo
 def generate_echo_data():
@@ -364,14 +361,14 @@ babi_targets = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_targ
 babi_io = list(zip(babi_data, babi_targets))
 
 input_count = 82
-hidden_count = 100
+hidden_count = 64
 class_count = 82
 
 echo_step = 5
 
-read_vector_count = 1
-memory_vector_size = 8
-memory_locations = 15
+read_vector_count = 4
+memory_vector_size = 16
+memory_locations = 16
 interface_vector_dimensions = [
     read_vector_count * memory_vector_size, # Read keys
     read_vector_count, # Read strengths
@@ -386,10 +383,10 @@ interface_vector_dimensions = [
 
 interface_vector_size = sum(interface_vector_dimensions)
 
-learning_rate = .001
+learning_rate = .1
 epoch_count = 1000
 test_ratio = .2
-batch_size = 20
+batch_size = 16
 
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
 targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
@@ -421,8 +418,8 @@ with tf.Session() as sess:
             batch_inputs = np.array([x[0] for x in batch])
             batch_targets = np.array([x[1] for x in batch])
 
-            # print(sess.run([predict], feed_dict={inputs: batch_inputs, targets: batch_targets}))
-            _ = sess.run([optimizer], feed_dict={inputs: batch_inputs, targets: batch_targets})
+            max_predict, batch_predict, batch_cost, _ = sess.run([tf.reduce_max(predict), predict, cost, optimizer], feed_dict={inputs: batch_inputs, targets: batch_targets})
+            print(max_predict)
 
         random.shuffle(train_data)
 
