@@ -6,7 +6,8 @@ import random
 def load_babi_file(path):
     with open(path) as f:
         lines = f.readlines()
-        lines = [x.split(' ') for x in lines]
+        lines = [x.replace('\t', ' ').replace('\n', '').split(' ') for x in lines]
+        lines = [[x for x in y if x not in ["", " ", "\n"]] for y in lines]
         stories = []
         for x in lines:
             if int(x[0]) == 1:
@@ -31,6 +32,25 @@ def build_vectorization(stories):
                 next_id = next_id + 1
     ids["_"] = next_id
     return ids
+
+def simplify_vectorization(stories):
+    targeted_stories = []
+    target_ids = dict()
+    for story in stories:
+        for ind, word in enumerate(story):
+            if not np.all(word == 0):
+                word_id = np.argmax(word)
+                if word_id not in target_ids:
+                    target_ids[word_id] = len(target_ids)
+    for story in stories:
+        targets = []
+        for ind, word in enumerate(story):
+            target = np.zeros(shape = (len(target_ids),), dtype = float)
+            if not np.all(word == 0):
+                target = one_hot(len(target_ids), target_ids[np.argmax(word)])
+            targets.append(target)
+        targeted_stories.append(targets)
+    return targeted_stories
 
 def one_hot(size, index):
     a = np.zeros(shape = (size,), dtype = float)
@@ -66,6 +86,7 @@ def build_babi_targets(stories, ids):
                 story[ind] = one_hot(len(ids), ids["_"])
             targets.append(target)
         targeted_stories.append(targets)
+    targeted_stories = simplify_vectorization(targeted_stories)
     return (stories, targeted_stories)
 
 def zero_pad_sequence(sequence, length):
@@ -331,9 +352,11 @@ def build_controller_iterator(weights, biases):
 
         # controller_output = basic_network(controller_input, weights, biases)
         controller_output, next_state.lstm_states = lstm_step(signal, weights, biases, prev_state.lstm_states)
-        next_state.output_vector = tf.matmul(controller_output[:, : class_count], weights['out'])
+        # next_state.output_vector = tf.matmul(controller_output[:, : class_count], weights['out'])
+        next_state.output_vector = controller_output[:, : class_count]
 
-        interface_vector = InterfaceVector(tf.matmul(controller_output[:, class_count :], weights['interface']))
+        # interface_vector = InterfaceVector(tf.matmul(controller_output[:, class_count :], weights['interface']))
+        interface_vector = InterfaceVector(controller_output[:, class_count :])
         next_state.memory, next_state.write_weighting = write_to_memory(interface_vector, prev_state.memory, prev_state.usage)
         next_state.read_vectors, next_state.read_weightings = read_from_memory(interface_vector, prev_state.memory, prev_state.links, prev_state.read_weightings)
         next_state.precedence = update_precendence_weighting(prev_state.precedence, next_state.write_weighting)
@@ -387,14 +410,13 @@ babi_data = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_data]
 babi_targets = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_targets]
 babi_io = list(zip(babi_data, babi_targets))
 
-input_count = class_count = np.array(babi_data[0]).shape[1]
-hidden_count = 8
+input_count = np.array(babi_data[0]).shape[1]
+class_count = np.array(babi_targets[0]).shape[1]
+hidden_count = 64
 
-echo_step = 5
-
-read_vector_count = 2
-memory_vector_size = 8
-memory_locations = 64
+read_vector_count = 4
+memory_vector_size = 16
+memory_locations = 16
 interface_vector_dimensions = [
     read_vector_count * memory_vector_size, # Read keys
     read_vector_count, # Read strengths
@@ -409,16 +431,15 @@ interface_vector_dimensions = [
 
 interface_vector_size = sum(interface_vector_dimensions)
 
-learning_rate = .01
+learning_rate = .0001
 epoch_count = 1000
-test_ratio = .2
-batch_size = 128
+test_ratio = .1
+batch_size = 16
 
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
 targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
 
 node_counts = [hidden_count, class_count + interface_vector_size]
-lstm_dimensions = [hidden_count, hidden_count, class_count]
 weights = declare_weights(node_counts)
 biases = declare_biases(node_counts)
 
