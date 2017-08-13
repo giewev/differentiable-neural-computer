@@ -122,14 +122,16 @@ class InterfaceVector(object):
 
 class ControllerState(object):
     def __init__(self):
-        self.read_vectors = tf.zeros([tf.shape(inputs)[0], read_vector_count, memory_vector_size], "float")
-        self.memory = tf.zeros([tf.shape(inputs)[0], memory_locations, memory_vector_size], "float")
-        self.links = tf.zeros([tf.shape(inputs)[0], memory_locations, memory_locations], "float")
-        self.output_vector = tf.zeros([tf.shape(inputs)[0], class_count], "float")
-        self.write_weighting = tf.zeros([tf.shape(inputs)[0], memory_locations])
-        self.read_weightings = tf.zeros([tf.shape(inputs)[0], read_vector_count, memory_locations])
-        self.precedence = tf.zeros([tf.shape(inputs)[0], memory_locations])
-        self.usage = tf.zeros([tf.shape(inputs)[0], memory_locations])
+        parallel_size = tf.shape(inputs)[0]
+        self.read_vectors = tf.zeros([parallel_size, read_vector_count, memory_vector_size], "float")
+        self.memory = tf.zeros([parallel_size, memory_locations, memory_vector_size], "float")
+        self.links = tf.zeros([parallel_size, memory_locations, memory_locations], "float")
+        self.output_vector = tf.zeros([parallel_size, class_count], "float")
+        self.write_weighting = tf.zeros([parallel_size, memory_locations])
+        self.read_weightings = tf.zeros([parallel_size, read_vector_count, memory_locations])
+        self.precedence = tf.zeros([parallel_size, memory_locations])
+        self.usage = tf.zeros([parallel_size, memory_locations])
+        self.lstm_states = build_zero_states(node_counts, parallel_size)
 
     def to_tuple(self):
         return (self.read_vectors,
@@ -139,7 +141,8 @@ class ControllerState(object):
                 self.precedence,
                 self.write_weighting,
                 self.read_weightings,
-                self.usage)
+                self.usage,
+                self.lstm_states)
 
     def load_tuple(self, tup):
         self.read_vectors = tup[0]
@@ -150,6 +153,13 @@ class ControllerState(object):
         self.write_weighting = tup[5]
         self.read_weightings = tup[6]
         self.usage = tup[7]
+        self.lstm_states = tup[8]
+
+def build_zero_states(node_counts, batch_size):
+    states = []
+    for x in node_counts[:-1]:
+        states.append(tf.contrib.rnn.BasicLSTMCell(x, state_is_tuple=True).zero_state(batch_size, tf.float32))
+    return states
 
 # Creates a set of weights based on the given layer sizes
 def declare_weights(node_counts):
@@ -250,7 +260,7 @@ def read_from_memory(interface, memory, links, prev_read):
         modes = interface.read_modes(x)
         lookup_weighting = content_weighting(memory, lookup_key, strength) * tf.expand_dims(modes[:, 1], 1)
         forward_weighting, backward_weighting = link_weightings(links, prev_read[:, x, :], modes)
-        weighting = lookup_weighting + forward_weighting + backward_weighting
+        weighting = forward_weighting + backward_weighting + lookup_weighting
         weightings.append(weighting)
         weighting = tf.tile(weighting, [1, memory_vector_size])
         weighting = tf.reshape(weighting, [tf.shape(weighting)[0], memory_locations, memory_vector_size])
@@ -287,29 +297,45 @@ def lstm_network(signal, weights, biases):
             value, state = tf.nn.dynamic_rnn(lstm_cell, signal, dtype=tf.float32)
 
             batch_size = tf.shape(value)[0]
-            sequence_weight = tf.tile(weights[x], [batch_size, 1])
-            sequence_weight = tf.reshape(sequence_weight, [batch_size, tf.shape(weights[x])[0], tf.shape(weights[x])[1]])
+            sequence_weight = tf.expand_dims(weights[x], 0)
+            sequence_weight = tf.tile(sequence_weight, [batch_size, 1, 1])
 
-            sequence_bias = tf.tile(biases[x], [batch_size * maximum_sequence_length])
-            sequence_bias = tf.reshape(sequence_bias, [batch_size, maximum_sequence_length, tf.shape(biases[x])[0]])
+            sequence_bias = biases[x]
 
             signal = tf.add(tf.matmul(value, sequence_weight), sequence_bias)
             signal = tf.reshape(signal, [batch_size, maximum_sequence_length, int(weights[x].shape[1])])
     return signal
+
+def lstm_step(signal, weights, biases, states):
+    layer = 0
+    while layer in weights:
+        with tf.variable_scope("LSTM" + str(layer)):
+            lstm_cell = tf.contrib.rnn.BasicLSTMCell(int(weights[layer].shape[0]), state_is_tuple=True, reuse=tf.get_variable_scope().reuse)
+            signal = tf.expand_dims(signal, 1)
+            signal, states[layer] = tf.nn.dynamic_rnn(lstm_cell, signal, initial_state = states[layer], dtype=tf.float32)
+            signal = tf.reduce_sum(signal, 1)
+
+            signal = tf.add(tf.matmul(signal, weights[layer]), biases[layer])
+            layer += 1
+    return signal, states
 
 def build_controller_iterator(weights, biases):
     def controller_iteration(prev_state_tuple, signal):
         prev_state = ControllerState()
         prev_state.load_tuple(prev_state_tuple)
         next_state = ControllerState()
-        flattened_read_vectors = tf.reshape(prev_state.read_vectors, [tf.shape(prev_state.read_vectors)[0], -1])
+        batch_size = tf.shape(prev_state.read_vectors)[0]
+        flattened_read_vectors = tf.reshape(prev_state.read_vectors, [batch_size, -1])
         controller_input = tf.concat([signal, flattened_read_vectors], 1)
-        controller_output = basic_network(controller_input, weights, biases)
+        controller_input = tf.reshape(controller_input, [batch_size, input_count + (memory_vector_size * read_vector_count)])
+
+        # controller_output = basic_network(controller_input, weights, biases)
+        controller_output, next_state.lstm_states = lstm_step(signal, weights, biases, prev_state.lstm_states)
         next_state.output_vector = tf.matmul(controller_output[:, : class_count], weights['out'])
-        
+
         interface_vector = InterfaceVector(tf.matmul(controller_output[:, class_count :], weights['interface']))
         next_state.memory, next_state.write_weighting = write_to_memory(interface_vector, prev_state.memory, prev_state.usage)
-        next_state.read_vectors,next_state.read_weightings = read_from_memory(interface_vector, prev_state.memory, prev_state.links, prev_state.read_weightings)
+        next_state.read_vectors, next_state.read_weightings = read_from_memory(interface_vector, prev_state.memory, prev_state.links, prev_state.read_weightings)
         next_state.precedence = update_precendence_weighting(prev_state.precedence, next_state.write_weighting)
         next_state.links = update_links(prev_state.links, prev_state.precedence, next_state.write_weighting)
         next_state.usage = update_usage(prev_state.usage, interface_vector, next_state.write_weighting, next_state.read_weightings)
@@ -323,8 +349,10 @@ def controller_network(input_sequence, weights, biases):
     controller_iteration = build_controller_iterator(weights, biases)
     input_sequence = tf.transpose(input_sequence, [1, 0, 2])
     result_states = tf.scan(controller_iteration, input_sequence, initializer = ControllerState().to_tuple())
-
-    return result_states[3]
+    
+    result = ControllerState()
+    result.load_tuple(result_states)
+    return tf.transpose(result.output_vector, [1, 0, 2])
 
 # Generates a random sequence with an expected output of a delayed echo
 def generate_echo_data():
@@ -336,7 +364,6 @@ def generate_echo_data():
 
 def sparse_sequence_softmax_cost(predict, targets):
     cost_mask = tf.sign(tf.reduce_max(tf.abs(targets), reduction_indices=2))
-    cost_mask = tf.transpose(cost_mask, [1, 0])
     cost = tf.nn.softmax_cross_entropy_with_logits(logits = predict, labels = targets)
     cost *= cost_mask
     cost = tf.reduce_sum(cost)
@@ -347,7 +374,6 @@ def correct_prediction_ratio(predict, targets):
     target_mask = tf.sign(tf.reduce_max(tf.abs(targets), reduction_indices=2))
     predict = tf.argmax(predict, axis = 2)
     targets = tf.argmax(targets, axis = 2)
-    predict = tf.transpose(predict, [1, 0])
     matches = tf.to_float(tf.equal(predict, targets))
     return tf.reduce_sum(matches * target_mask) / tf.to_float(tf.shape(predict)[0])
 
@@ -368,7 +394,7 @@ echo_step = 5
 
 read_vector_count = 4
 memory_vector_size = 16
-memory_locations = 16
+memory_locations = 64
 interface_vector_dimensions = [
     read_vector_count * memory_vector_size, # Read keys
     read_vector_count, # Read strengths
@@ -383,10 +409,10 @@ interface_vector_dimensions = [
 
 interface_vector_size = sum(interface_vector_dimensions)
 
-learning_rate = .1
+learning_rate = .001
 epoch_count = 1000
 test_ratio = .2
-batch_size = 16
+batch_size = 32
 
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
 targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
@@ -397,7 +423,6 @@ weights = declare_weights(node_counts)
 biases = declare_biases(node_counts)
 
 predict = controller_network(inputs, weights, biases)
-# cost = tf.reduce_mean(tf.squared_difference(predict, targets))
 cost = sparse_sequence_softmax_cost(predict, targets)
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
 accuracy = correct_prediction_ratio(predict, targets)
@@ -418,8 +443,7 @@ with tf.Session() as sess:
             batch_inputs = np.array([x[0] for x in batch])
             batch_targets = np.array([x[1] for x in batch])
 
-            max_predict, batch_predict, batch_cost, _ = sess.run([tf.reduce_max(predict), predict, cost, optimizer], feed_dict={inputs: batch_inputs, targets: batch_targets})
-            print(max_predict)
+            batch_predict, batch_cost, _ = sess.run([predict, cost, optimizer], feed_dict={inputs: batch_inputs, targets: batch_targets})
 
         random.shuffle(train_data)
 
