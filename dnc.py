@@ -377,7 +377,8 @@ def correct_prediction_ratio(predict, targets):
     matches = tf.to_float(tf.equal(predict, targets))
     return tf.reduce_sum(matches * target_mask) / tf.to_float(tf.shape(predict)[0])
 
-babi_data = load_babi_file(r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar-20170708T211118Z-001\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en-10k\qa1_single-supporting-fact_train.txt")
+dataset_path = r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar-20170708T211118Z-001\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en-10k\qa1_single-supporting-fact_train.txt"
+babi_data = load_babi_file(dataset_path)
 babi_ids, babi_data = vectorize_babi_file(babi_data)
 babi_data, babi_targets = build_babi_targets(babi_data, babi_ids)
 sequence_lengths = [len(x) for x in babi_data]
@@ -386,14 +387,13 @@ babi_data = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_data]
 babi_targets = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_targets]
 babi_io = list(zip(babi_data, babi_targets))
 
-input_count = 82
-hidden_count = 64
-class_count = 82
+input_count = class_count = np.array(babi_data[0]).shape[1]
+hidden_count = 8
 
 echo_step = 5
 
-read_vector_count = 4
-memory_vector_size = 16
+read_vector_count = 2
+memory_vector_size = 8
 memory_locations = 64
 interface_vector_dimensions = [
     read_vector_count * memory_vector_size, # Read keys
@@ -409,15 +409,15 @@ interface_vector_dimensions = [
 
 interface_vector_size = sum(interface_vector_dimensions)
 
-learning_rate = .001
+learning_rate = .01
 epoch_count = 1000
 test_ratio = .2
-batch_size = 32
+batch_size = 128
 
 inputs = tf.placeholder("float", [None, maximum_sequence_length, input_count])
 targets = tf.placeholder("float", [None, maximum_sequence_length, class_count])
 
-node_counts = [input_count + (read_vector_count * memory_vector_size), hidden_count, class_count + interface_vector_size]
+node_counts = [hidden_count, class_count + interface_vector_size]
 lstm_dimensions = [hidden_count, hidden_count, class_count]
 weights = declare_weights(node_counts)
 biases = declare_biases(node_counts)
