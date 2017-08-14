@@ -232,7 +232,7 @@ def update_usage(old_usage, interface, write_weighting, read_weightings):
 
 def multi_map_fn(func, args):
     slice_indices = tf.range(tf.shape(args[0])[0])
-    return tf.map_fn(lambda x: func(*[arg[x] for arg in args]), slice_indices)
+    return tf.map_fn(lambda x: func(*[arg[x] for arg in args]), slice_indices, dtype = tf.float32)
 
 def allocation_weighting(usage):
     space = 1 - usage
@@ -241,8 +241,6 @@ def allocation_weighting(usage):
     rolling_space = tf.cumprod(most_free, axis = 1)
     allocation = most_free * rolling_space
 
-    # unsorting_indices = batch_apply(tf.invert_permutation, free_indices)
-    # return batch_apply(tf.gather, allocation, unsorting_indices)
     unsorting_indices = tf.map_fn(tf.invert_permutation, free_indices)
     return multi_map_fn(tf.gather, [allocation, unsorting_indices])
 
@@ -251,18 +249,17 @@ def write_to_memory(interface, memory, usage):
     lookup_key = interface.write_key()
     write_vector = interface.write_vector()
     strength = interface.write_strength()
-    mode = interface.allocation_gate()
+    mode = tf.expand_dims(interface.allocation_gate(), axis = 1)
     write_gate = interface.write_gate()
     erase_vector = interface.erase_vector()
 
     lookup_weighting = content_weighting(memory, lookup_key, strength)
     alloc_weighting = allocation_weighting(usage)
-    weighting = tf.transpose(tf.transpose(lookup_weighting, [1, 0]) * mode, [1, 0]) #+ allocation_weighting * (1-mode)
+    weighting = lookup_weighting * mode + alloc_weighting * (1-mode)
     expanded_weighting = tf.expand_dims(weighting, 2)
     write_vector = tf.expand_dims(write_vector, 1)
     erase_vector = tf.expand_dims(erase_vector, 1)
-    # memory = memory * (1 - tf.matmul(weighting, erase_vector)) + tf.matmul(weighting, write_vector)
-    memory = memory + tf.matmul(expanded_weighting, write_vector)
+    memory = memory * (1 - tf.matmul(expanded_weighting, erase_vector)) + tf.matmul(expanded_weighting, write_vector)
 
     return memory, weighting
 
@@ -350,7 +347,6 @@ def build_controller_iterator(weights, biases):
         controller_input = tf.concat([signal, flattened_read_vectors], 1)
         controller_input = tf.reshape(controller_input, [batch_size, input_count + (memory_vector_size * read_vector_count)])
 
-        # controller_output = basic_network(controller_input, weights, biases)
         controller_output, next_state.lstm_states = lstm_step(signal, weights, biases, prev_state.lstm_states)
         # next_state.output_vector = tf.matmul(controller_output[:, : class_count], weights['out'])
         next_state.output_vector = controller_output[:, : class_count]
