@@ -1,49 +1,21 @@
 from babi import *
+from ControllerState import ControllerState
 from InterfaceWrapper import InterfaceWrapper
 import tensorflow as tf
 import numpy as np
 import random
 
-class ControllerState(object):
-    def __init__(self):
-        parallel_size = tf.shape(inputs)[0]
-        self.read_vectors = tf.zeros([parallel_size, read_vector_count, memory_vector_size], "float")
-        self.memory = tf.zeros([parallel_size, memory_locations, memory_vector_size], "float")
-        self.links = tf.zeros([parallel_size, memory_locations, memory_locations], "float")
-        self.output_vector = tf.zeros([parallel_size, class_count], "float")
-        self.write_weighting = tf.zeros([parallel_size, memory_locations])
-        self.read_weightings = tf.zeros([parallel_size, read_vector_count, memory_locations])
-        self.precedence = tf.zeros([parallel_size, memory_locations])
-        self.usage = tf.zeros([parallel_size, memory_locations])
-        self.lstm_states = build_zero_states(node_counts, parallel_size)
+def build_default_state():
+    state = ControllerState(
+        batch_size = tf.shape(inputs)[0],
+        class_count = class_count,
+        read_vector_count = read_vector_count,
+        memory_vector_size = memory_vector_size,
+        memory_locations = memory_locations,
+        node_counts = node_counts)
+    batch_size = tf.shape(inputs)[0]
 
-    def to_tuple(self):
-        return (self.read_vectors,
-                self.memory,
-                self.links,
-                self.output_vector,
-                self.precedence,
-                self.write_weighting,
-                self.read_weightings,
-                self.usage,
-                self.lstm_states)
-
-    def load_tuple(self, tup):
-        self.read_vectors = tup[0]
-        self.memory = tup[1]
-        self.links = tup[2]
-        self.output_vector = tup[3]
-        self.precedence = tup[4]
-        self.write_weighting = tup[5]
-        self.read_weightings = tup[6]
-        self.usage = tup[7]
-        self.lstm_states = tup[8]
-
-def build_zero_states(node_counts, batch_size):
-    states = []
-    for x in node_counts[:-1]:
-        states.append(tf.contrib.rnn.BasicLSTMCell(x, state_is_tuple=True).zero_state(batch_size, tf.float32))
-    return states
+    return state
 
 # Creates a set of weights based on the given layer sizes
 def declare_weights(node_counts):
@@ -202,9 +174,9 @@ def lstm_step(signal, weights, biases, states):
 
 def build_controller_iterator(weights, biases):
     def controller_iteration(prev_state_tuple, signal):
-        prev_state = ControllerState()
+        prev_state = build_default_state()
         prev_state.load_tuple(prev_state_tuple)
-        next_state = ControllerState()
+        next_state = build_default_state()
         batch_size = tf.shape(prev_state.read_vectors)[0]
         flattened_read_vectors = tf.reshape(prev_state.read_vectors, [batch_size, -1])
         controller_input = tf.concat([signal, flattened_read_vectors], 1)
@@ -228,9 +200,9 @@ def controller_network(input_sequence, weights, biases):
     add_controller_weights(weights)
     controller_iteration = build_controller_iterator(weights, biases)
     input_sequence = tf.transpose(input_sequence, [1, 0, 2])
-    result_states = tf.scan(controller_iteration, input_sequence, initializer = ControllerState().to_tuple())
+    result_states = tf.scan(controller_iteration, input_sequence, initializer = build_default_state().to_tuple())
     
-    result = ControllerState()
+    result = build_default_state()
     result.load_tuple(result_states)
     return tf.transpose(result.output_vector, [1, 0, 2])
 
