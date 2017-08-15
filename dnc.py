@@ -1,101 +1,7 @@
+from babi import *
 import tensorflow as tf
 import numpy as np
 import random
-# mnist = input_data.read_data_sets("/tmp/data/", one_hot=True)
-
-def load_babi_file(path):
-    with open(path) as f:
-        lines = f.readlines()
-        lines = [x.replace('\t', ' ').replace('\n', '').split(' ') for x in lines]
-        lines = [[x for x in y if x not in ["", " ", "\n"]] for y in lines]
-        stories = []
-        for x in lines:
-            if int(x[0]) == 1:
-                stories.append([])
-            stories[-1].append(x)
-        return stories
-
-def is_numeric(string):
-    try:
-        int(string)
-        return True
-    except:
-        return False
-
-def build_vectorization(stories):
-    ids = dict()
-    next_id = 0
-    for x in stories:
-        for y in x:
-            if y not in ids:
-                ids[y] = next_id
-                next_id = next_id + 1
-    ids["_"] = next_id
-    return ids
-
-def simplify_vectorization(stories):
-    targeted_stories = []
-    target_ids = dict()
-    for story in stories:
-        for ind, word in enumerate(story):
-            if not np.all(word == 0):
-                word_id = np.argmax(word)
-                if word_id not in target_ids:
-                    target_ids[word_id] = len(target_ids)
-    for story in stories:
-        targets = []
-        for ind, word in enumerate(story):
-            target = np.zeros(shape = (len(target_ids),), dtype = float)
-            if not np.all(word == 0):
-                target = one_hot(len(target_ids), target_ids[np.argmax(word)])
-            targets.append(target)
-        targeted_stories.append(targets)
-    return targeted_stories
-
-def one_hot(size, index):
-    a = np.zeros(shape = (size,), dtype = float)
-    a[index] = 1
-    return a
-
-def vectorize_babi_file(stories):
-    stories = [[z for y in x for z in y if not is_numeric(z)] for x in stories]
-    for x in stories:
-        y = 0
-        while y < len(x):
-            if "?" in x[y]:
-                x[y] = x[y].replace("?", "")
-                x.insert(y + 1, "?")
-                y += 1
-            if "." in x[y]:
-                x[y] = x[y].replace(".", "")
-                x.insert(y + 1, ".")
-                y += 1
-            y += 1
-    ids = build_vectorization(stories)
-    stories = [[one_hot(len(ids), ids[y]) for y in x] for x in stories]
-    return (ids, stories)
-
-def build_babi_targets(stories, ids):
-    targeted_stories = []
-    for story in stories:
-        targets = []
-        for ind, word in enumerate(story):
-            target = np.zeros(shape = (len(ids),), dtype = float)
-            if ind > 0 and np.all(np.equal(story[ind - 1], one_hot(len(ids), ids["?"]))):
-                target = word
-                story[ind] = one_hot(len(ids), ids["_"])
-            targets.append(target)
-        targeted_stories.append(targets)
-    targeted_stories = simplify_vectorization(targeted_stories)
-    return (stories, targeted_stories)
-
-def zero_pad_sequence(sequence, length):
-    while len(sequence) < length:
-        sequence.append(np.zeros(shape = np.shape(sequence[0]), dtype = float))
-    return sequence
-
-def oneplus(x):
-    return 1 + tf.log(1 + tf.exp(x))
 
 # A class that wraps a batch of interface vectors in order to provide the specific factors from them
 class InterfaceVector(object):
@@ -175,6 +81,10 @@ class ControllerState(object):
         self.read_weightings = tup[6]
         self.usage = tup[7]
         self.lstm_states = tup[8]
+
+
+def oneplus(x):
+    return 1 + tf.log(1 + tf.exp(x))
 
 def build_zero_states(node_counts, batch_size):
     states = []
@@ -397,17 +307,11 @@ def correct_prediction_ratio(predict, targets):
     return tf.reduce_sum(matches * target_mask) / tf.to_float(tf.shape(predict)[0])
 
 dataset_path = r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar-20170708T211118Z-001\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en-10k\qa1_single-supporting-fact_train.txt"
-babi_data = load_babi_file(dataset_path)
-babi_ids, babi_data = vectorize_babi_file(babi_data)
-babi_data, babi_targets = build_babi_targets(babi_data, babi_ids)
-sequence_lengths = [len(x) for x in babi_data]
-maximum_sequence_length = max(sequence_lengths)
-babi_data = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_data]
-babi_targets = [zero_pad_sequence(x, maximum_sequence_length) for x in babi_targets]
-babi_io = list(zip(babi_data, babi_targets))
+babi_io = load_babi_file(dataset_path)
 
-input_count = np.array(babi_data[0]).shape[1]
-class_count = np.array(babi_targets[0]).shape[1]
+input_count = np.array(babi_io[0][0]).shape[1]
+class_count = np.array(babi_io[0][1]).shape[1]
+maximum_sequence_length = np.array(babi_io[0][0]).shape[0]
 hidden_count = 64
 
 read_vector_count = 4
