@@ -1,51 +1,8 @@
 from babi import *
+from InterfaceWrapper import InterfaceWrapper
 import tensorflow as tf
 import numpy as np
 import random
-
-# A class that wraps a batch of interface vectors in order to provide the specific factors from them
-class InterfaceVector(object):
-    def __init__(self, vector):
-        self.vector = vector
-
-    def read_key(self, index):
-        return self.vector[:, index * memory_vector_size : (index + 1) * memory_vector_size]
-
-    def read_strength(self, index):
-        start = read_vector_count * memory_vector_size
-        return oneplus(self.vector[:, start + index])
-
-    def write_key(self):
-        start = read_vector_count * (memory_vector_size + 1)
-        return self.vector[:, start : start + memory_vector_size]
-
-    def erase_vector(self):
-        start = read_vector_count * memory_vector_size + memory_vector_size + read_vector_count
-        return tf.sigmoid(self.vector[:, start : start + memory_vector_size])
-
-    def write_vector(self):
-        start = read_vector_count * memory_vector_size + read_vector_count + (memory_vector_size * 2)
-        return self.vector[:, start : start + memory_vector_size]
-
-    def free_gate(self, index):
-        start = read_vector_count * memory_vector_size + read_vector_count + (memory_vector_size * 3)
-        return tf.sigmoid(self.vector[:, start + index])
-
-    def read_modes(self, index):
-        start = read_vector_count * memory_vector_size + (read_vector_count * 2) + (memory_vector_size * 3)
-        return tf.nn.softmax(self.vector[:, start + ((index - 1) * 3) : start + (index * 3)])
-
-    def allocation_gate(self):
-        start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
-        return tf.sigmoid(self.vector[:, start])
-
-    def write_gate(self):
-        start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
-        return tf.sigmoid(self.vector[:, start + 1])
-
-    def write_strength(self):
-        start = read_vector_count * memory_vector_size + (read_vector_count * 5) + (memory_vector_size * 3)
-        return oneplus(self.vector[:, start + 2])
 
 class ControllerState(object):
     def __init__(self):
@@ -81,10 +38,6 @@ class ControllerState(object):
         self.read_weightings = tup[6]
         self.usage = tup[7]
         self.lstm_states = tup[8]
-
-
-def oneplus(x):
-    return 1 + tf.log(1 + tf.exp(x))
 
 def build_zero_states(node_counts, batch_size):
     states = []
@@ -258,11 +211,9 @@ def build_controller_iterator(weights, biases):
         controller_input = tf.reshape(controller_input, [batch_size, input_count + (memory_vector_size * read_vector_count)])
 
         controller_output, next_state.lstm_states = lstm_step(signal, weights, biases, prev_state.lstm_states)
-        # next_state.output_vector = tf.matmul(controller_output[:, : class_count], weights['out'])
         next_state.output_vector = controller_output[:, : class_count]
 
-        # interface_vector = InterfaceVector(tf.matmul(controller_output[:, class_count :], weights['interface']))
-        interface_vector = InterfaceVector(controller_output[:, class_count :])
+        interface_vector = InterfaceWrapper(controller_output[:, class_count :], read_vector_count, memory_vector_size)
         next_state.memory, next_state.write_weighting = write_to_memory(interface_vector, prev_state.memory, prev_state.usage)
         next_state.read_vectors, next_state.read_weightings = read_from_memory(interface_vector, prev_state.memory, prev_state.links, prev_state.read_weightings)
         next_state.precedence = update_precendence_weighting(prev_state.precedence, next_state.write_weighting)
