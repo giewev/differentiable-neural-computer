@@ -134,8 +134,7 @@ def read_from_memory(interface, memory, links, prev_read):
 
 # Updates the precedence for each location, which indicates how recently each location was written to
 def update_precendence_weighting(old_precendence, write_weighting):
-    # TODO: Fix this, I'm pretty the sure the precedence is being messed up by the reduce sum being all dimensions
-    return (1 - tf.reduce_sum(write_weighting)) * old_precendence + write_weighting
+    return (1 - tf.reduce_sum(write_weighting, keep_dims = True)) * old_precendence + write_weighting
 
 # Updates the linkage between each of the memory locations
 # The linkage indicates how likely a location is to be written to after another location
