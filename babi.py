@@ -1,5 +1,7 @@
 import numpy as np
 
+# Loads and vectorizes a babi dataset file
+# Also creates a corresponding target sequence
 def load_babi_file(path):
     data = read_babi_file(path)
     ids, data = vectorize_babi_file(data)
@@ -10,6 +12,7 @@ def load_babi_file(path):
     targets = [zero_pad_sequence(x, maximum_sequence_length) for x in targets]
     return list(zip(data, targets))
 
+# Reads a babi file and splits it into seperate stories and words
 def read_babi_file(path):
     with open(path) as f:
         lines = f.readlines()
@@ -22,6 +25,7 @@ def read_babi_file(path):
             stories[-1].append(x)
         return stories
 
+# Checks if a string is numeric
 def is_numeric(string):
     try:
         int(string)
@@ -29,6 +33,7 @@ def is_numeric(string):
     except:
         return False
 
+# builds a lookup for the one hot indices in the vectorization of a story
 def build_vectorization(stories):
     ids = dict()
     next_id = 0
@@ -40,15 +45,20 @@ def build_vectorization(stories):
     ids["_"] = next_id
     return ids
 
+# Takes a target vectorization and simplifies it by removing any values that are not possible answers
 def simplify_vectorization(stories):
     targeted_stories = []
     target_ids = dict()
+
+    # Find all of the indices that the story is actually using
     for story in stories:
         for ind, word in enumerate(story):
             if not np.all(word == 0):
                 word_id = np.argmax(word)
                 if word_id not in target_ids:
                     target_ids[word_id] = len(target_ids)
+
+    # Generate new vectors for the targets based on the new IDs
     for story in stories:
         targets = []
         for ind, word in enumerate(story):
@@ -59,11 +69,13 @@ def simplify_vectorization(stories):
         targeted_stories.append(targets)
     return targeted_stories
 
+# Makes a one hot float vector 
 def one_hot(size, index):
     a = np.zeros(shape = (size,), dtype = float)
     a[index] = 1
     return a
 
+# Converts the words in the story to one hot vectors, and creates a corresponding target story
 def vectorize_babi_file(stories):
     stories = [[z for y in x for z in y if not is_numeric(z)] for x in stories]
     for x in stories:
@@ -82,6 +94,7 @@ def vectorize_babi_file(stories):
     stories = [[one_hot(len(ids), ids[y]) for y in x] for x in stories]
     return (ids, stories)
 
+# Removes the answers from the input stories, and creates a corresponding target vector story
 def build_babi_targets(stories, ids):
     targeted_stories = []
     for story in stories:
@@ -96,6 +109,7 @@ def build_babi_targets(stories, ids):
     targeted_stories = simplify_vectorization(targeted_stories)
     return (stories, targeted_stories)
 
+# Pads a sequence out with 0 vectors until it is the given length
 def zero_pad_sequence(sequence, length):
     while len(sequence) < length:
         sequence.append(np.zeros(shape = np.shape(sequence[0]), dtype = float))

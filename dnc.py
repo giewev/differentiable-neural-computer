@@ -5,6 +5,7 @@ import tensorflow as tf
 import numpy as np
 import random
 
+# Builds the default controller state
 def build_default_state():
     state = ControllerState(
         batch_size = tf.shape(inputs)[0],
@@ -51,6 +52,7 @@ def content_weighting(memory, key, strength):
     similarity = product / (norm + 0.000001)
     return tf.nn.softmax(tf.reshape(similarity, [-1, memory_locations]))
 
+# Calculates the degree to which each memory location should be retained (Not freed) after reading
 def retention_vector(free_gates, read_weightings):
     # Free: ?, read_count
     # weights: ?, read_count, memory_locations
@@ -58,6 +60,7 @@ def retention_vector(free_gates, read_weightings):
     free_gates = tf.expand_dims(free_gates, 2)
     return tf.reduce_prod(1 - (free_gates * read_weightings), axis = 1)
 
+# Updates the usage stats for each memory location
 def update_usage(old_usage, interface, write_weighting, read_weightings):
     usage = old_usage + write_weighting
     usage -= old_usage * write_weighting
@@ -65,10 +68,12 @@ def update_usage(old_usage, interface, write_weighting, read_weightings):
 
     return usage * retention_vector(free_gates, read_weightings)
 
+# Maps a function to call it on each matrix in a batch
 def multi_map_fn(func, args):
     slice_indices = tf.range(tf.shape(args[0])[0])
     return tf.map_fn(lambda x: func(*[arg[x] for arg in args]), slice_indices, dtype = tf.float32)
 
+# Calculates a write weighting based on the degree to which each memory location is "Used up"
 def allocation_weighting(usage):
     space = 1 - usage
     most_free, free_indices = tf.nn.top_k(space, k = memory_locations)
@@ -90,7 +95,7 @@ def write_to_memory(interface, memory, usage):
 
     lookup_weighting = content_weighting(memory, lookup_key, strength)
     alloc_weighting = allocation_weighting(usage)
-    weighting = lookup_weighting * mode + alloc_weighting * (1-mode)
+    weighting = write_gate * (lookup_weighting * mode + alloc_weighting * (1-mode))
     expanded_weighting = tf.expand_dims(weighting, 2)
     write_vector = tf.expand_dims(write_vector, 1)
     erase_vector = tf.expand_dims(erase_vector, 1)
@@ -98,12 +103,17 @@ def write_to_memory(interface, memory, usage):
 
     return memory, weighting
 
+# Calculates a new read weighting based on historical links between memory locations
+# Locations which are written to in succession will be read in succession
+# Also provides a backwards link weighting for a LIFO read order
 def link_weightings(links, prev_read, modes):
     prev_read_3d = tf.expand_dims(prev_read, 2)
     forward = tf.reduce_sum(tf.matmul(links, prev_read_3d), axis = 2) * tf.expand_dims(modes[:, 0], 1)
     backward = tf.reduce_sum(tf.matmul(tf.transpose(links, [0, 2, 1]), prev_read_3d), axis = 2) * tf.expand_dims(modes[:, 2], 1)
     return forward, backward
 
+# Generates read vectors for the next step in the controller network
+# Read vectors are based on a combination of content lookup and reading in the order things were written
 def read_from_memory(interface, memory, links, prev_read):
     read_vectors = []
     weightings = []
@@ -122,9 +132,13 @@ def read_from_memory(interface, memory, links, prev_read):
         read_vectors.append(read_vector)
     return tf.stack(read_vectors, axis = 1), tf.stack(weightings, axis = 1)
 
+# Updates the precedence for each location, which indicates how recently each location was written to
 def update_precendence_weighting(old_precendence, write_weighting):
+    # TODO: Fix this, I'm pretty the sure the precedence is being messed up by the reduce sum being all dimensions
     return (1 - tf.reduce_sum(write_weighting)) * old_precendence + write_weighting
 
+# Updates the linkage between each of the memory locations
+# The linkage indicates how likely a location is to be written to after another location
 def update_links(old_links, old_precendence, write_weighting):
     left_weight = tf.expand_dims(write_weighting, 2)
     right_weight = tf.expand_dims(write_weighting, 1)
@@ -143,6 +157,7 @@ def basic_network(signal, weights, biases):
         layer += 1
     return signal
 
+# A generic LSTM network which expects a sequence of vectors
 def lstm_network(signal, weights, biases):
     for x in range(len(weights)):
         with tf.variable_scope("LSTM" + str(x)):
@@ -159,6 +174,7 @@ def lstm_network(signal, weights, biases):
             signal = tf.reshape(signal, [batch_size, maximum_sequence_length, int(weights[x].shape[1])])
     return signal
 
+# Calculates a single step in an LSTM network's calculations starting from the given state
 def lstm_step(signal, weights, biases, states):
     layer = 0
     while layer in weights:
@@ -172,6 +188,9 @@ def lstm_step(signal, weights, biases, states):
             layer += 1
     return signal, states
 
+# Builds a single iteration in the controller network's calculations
+# This single iteration takes and produces a tuple of the same dimensions, which is then converted to a ControllerState object
+# This allows the step function to be passed into tf.scan
 def build_controller_iterator(weights, biases):
     def controller_iteration(prev_state_tuple, signal):
         prev_state = build_default_state()
@@ -214,6 +233,8 @@ def generate_echo_data():
 
     return (x, y)
 
+# Calculates the average softmax cost of each step in the sequence
+# Only considers the prediction and target vectors where there is a target value
 def sparse_sequence_softmax_cost(predict, targets):
     cost_mask = tf.sign(tf.reduce_max(tf.abs(targets), reduction_indices=2))
     cost = tf.nn.softmax_cross_entropy_with_logits(logits = predict, labels = targets)
@@ -222,6 +243,7 @@ def sparse_sequence_softmax_cost(predict, targets):
     cost /= tf.reduce_sum(cost_mask)
     return cost
 
+# Calculates the ratio between correct predictions in the sequence, and the number of sequences in the batch
 def correct_prediction_ratio(predict, targets):
     target_mask = tf.sign(tf.reduce_max(tf.abs(targets), reduction_indices=2))
     predict = tf.argmax(predict, axis = 2)

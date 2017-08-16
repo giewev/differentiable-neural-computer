@@ -1,5 +1,7 @@
 import tensorflow as tf
 
+# Defines the state of a controller network
+# Need to convert it to and from a tuple so that it can pass through tf.scan
 class ControllerState(object):
     def __init__(self,
         batch_size = 1,
@@ -41,6 +43,7 @@ class ControllerState(object):
         self.usage = tup[7]
         self.lstm_states = tup[8]
 
+# Builds the initial states that should be used in the LSTM
 def build_zero_states(node_counts, batch_size):
     states = []
     for x in node_counts[:-1]:
