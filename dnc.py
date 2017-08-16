@@ -250,7 +250,7 @@ def correct_prediction_ratio(predict, targets):
     matches = tf.to_float(tf.equal(predict, targets))
     return tf.reduce_sum(matches * target_mask) / tf.to_float(tf.shape(predict)[0])
 
-dataset_path = r"C:\Users\Ian\Downloads\babi_tasks_1-20_v1-2.tar-20170708T211118Z-001\babi_tasks_1-20_v1-2.tar\tasks_1-20_v1-2\en-10k\qa1_single-supporting-fact_train.txt"
+dataset_path = r"datasets\qa1_single-supporting-fact.txt"
 babi_io = load_babi_file(dataset_path)
 
 input_count = np.array(babi_io[0][0]).shape[1]
